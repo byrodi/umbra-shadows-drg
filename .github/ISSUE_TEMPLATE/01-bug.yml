@@ -27,7 +27,7 @@ body:
     id: version
     attributes:
       label: Umbra version
-      description: The release you installed, for example v1.0.0.
+      description: The release you installed, for example v0.1.0.
     validations:
       required: true
   - type: input

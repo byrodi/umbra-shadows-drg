@@ -47,7 +47,7 @@ HUBMOD_C = HUBMOD + ".Umbra_Hub_C"
 SAVE_SLOT = "Umbra"
 MOD_NAME = "Umbra Shadows"  # shown in Mod Hub; internal paths and the save slot keep "Umbra"
 MOD_AUTHOR = "rodionmasalov"
-MOD_VERSION = "1.0.0"
+MOD_VERSION = "0.1.0"
 
 # A spot light on a player is the headlamp beam when it reaches at least this far and is at most this wide.
 # Matches the game's own headlamp and the Pretty Flashlights one, also after Advanced Darkness shortens them;
