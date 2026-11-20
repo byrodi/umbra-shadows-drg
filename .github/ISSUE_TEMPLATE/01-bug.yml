@@ -1,0 +1,55 @@
+name: Bug report
+description: Something looks wrong or does not work in the game
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search [existing issues](https://github.com/byrodi/umbra-drg/issues?q=is%3Aissue) first. Security problems go to a [private report](https://github.com/byrodi/umbra-drg/security/advisories/new), not here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead. Screenshots help a lot; drag them in here.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a solo mission in ...
+        2. Throw a flare next to ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Umbra version
+      description: The release you installed, for example v1.0.0.
+    validations:
+      required: true
+  - type: input
+    id: loader
+    attributes:
+      label: Mod loader
+      description: mint and its version, or the in-game mod.io loader.
+    validations:
+      required: true
+  - type: textarea
+    id: other-mods
+    attributes:
+      label: Other mods
+      description: Other enabled mods, at least those that change light, fog or post processing.
+  - type: input
+    id: graphics
+    attributes:
+      label: Graphics settings
+      description: Resolution, upscaler (DLSS, FSR), shadow quality.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: Relevant lines from FSD/Saved/Logs/FSD.log. It is formatted as code automatically.
+      render: shell

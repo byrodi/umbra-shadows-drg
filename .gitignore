@@ -1,0 +1,10 @@
+# Unreal build output, if the folders are used inside a project checkout
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+.vs/
