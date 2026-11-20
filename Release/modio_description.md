@@ -2,7 +2,7 @@
 
 Name: Umbra Shadows
 Summary (mod.io limit 250 characters):
-Every flare casts round, soft shadows in its class colour; headlamps cast shadows too. Far shadows fade out smoothly, so a cave full of flares stays playable. Client-side, works in any lobby.
+Every flare casts round, soft shadows in its class colour; headlamps cast shadows too. Far shadows fade out smoothly, so a cave full of flares stays playable. Client-side: other players do not need it.
 
 Tags: Visual. The approval category (Verified / Approved / Sandbox) is decided by the DRG mod reviewers, not
 by the author; Umbra is client-side only and changes no gameplay.
