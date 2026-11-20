@@ -52,6 +52,17 @@ All settings apply at once in a mission. Without Mod Hub the mod runs with the d
 
 Headlamp shadows, team headlamp shadows, soft penumbra and cave wall shadows can be switched off on the same page.
 
+## Performance
+
+Tested on Ryzen 9 7900X, RTX 5070, 32 GB RAM, 3840×2160 with DLSS Quality.
+Frame rates read from the in-game FPS counter.
+
+| Scene | Mod off (avg) | Mod on (avg / low) |
+| --- | --- | --- |
+| Normal play in a cave | 210 | 185 / 152 |
+| Large crystal cave lit by flare gun flares | 178 | 155 / 133 |
+| 50 bugs around flares | 144 | 125 / 115 |
+
 ## Compatibility
 
 - Made to run next to [Advanced Darkness](https://mod.io/g/drg/m/advanced-darkness-reloaded), [Pretty Flashlights](https://mod.io/g/drg/m/pretty-flashlights), [Better Post Processing](https://mod.io/g/drg/m/better-post-processing-reloaded) and Mod Hub.
