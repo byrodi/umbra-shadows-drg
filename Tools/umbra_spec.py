@@ -45,7 +45,7 @@ HUBMOD = MOD + "UI/Umbra_Hub"
 HUBMOD_C = HUBMOD + ".Umbra_Hub_C"
 
 SAVE_SLOT = "Umbra"
-MOD_NAME = "Umbra"
+MOD_NAME = "Umbra Shadows"  # shown in Mod Hub; internal paths and the save slot keep "Umbra"
 MOD_AUTHOR = "rodionmasalov"
 MOD_VERSION = "1.0.0"
 
@@ -946,7 +946,7 @@ def page_tree():
     pad = {"Padding": "(Left=0,Top=4,Right=0,Bottom=4)"}
     hint_pad = {"Padding": "(Left=0,Top=0,Right=0,Bottom=10)"}
     rows = [
-        text("Title", "UMBRA", 26, AMBER, slot=pad),
+        text("Title", "UMBRA SHADOWS", 26, AMBER, slot=pad),
         text("Subtitle", "Real shadows with soft edges from headlamps and flares. Changes apply at once in a mission.",
              13, GREY, slot={"Padding": "(Left=0,Top=0,Right=0,Bottom=14)"}),
     ]

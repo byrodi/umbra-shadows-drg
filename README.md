@@ -1,7 +1,7 @@
-# Umbra
+# Umbra Shadows
 
-[![Latest release](https://img.shields.io/github/v/release/byrodi/umbra-drg)](https://github.com/byrodi/umbra-drg/releases/latest)
-[![License](https://img.shields.io/github/license/byrodi/umbra-drg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/byrodi/umbra-shadows-drg)](https://github.com/byrodi/umbra-shadows-drg/releases/latest)
+[![License](https://img.shields.io/github/license/byrodi/umbra-shadows-drg)](LICENSE)
 
 Deep Rock Galactic mod: every flare casts round, soft shadows in its class colour, and headlamps cast shadows too.
 
@@ -22,17 +22,17 @@ Deep Rock Galactic mod: every flare casts round, soft shadows in its class colou
 
 The same spot with the mod off and on.
 
-![Left: the game's flare lights a narrow cone. Right: Umbra lights the floor all round and the rocks cast shadows](.github/images/compare-floor.jpg)
+![Left: the game's flare lights a narrow cone. Right: Umbra Shadows lights the floor all round and the rocks cast shadows](.github/images/compare-floor.jpg)
 
 ![Left: a flat cave wall. Right: the plants in front of the flare cast a large shadow on the wall](.github/images/compare-mushrooms.jpg)
 
 ## Installation
 
-1. Download `Umbra.pak` from the [latest release](https://github.com/byrodi/umbra-drg/releases/latest).
+1. Download `umbra-shadows.pak` from the [latest release](https://github.com/byrodi/umbra-shadows-drg/releases/latest).
 2. Add it to [mint](https://github.com/trumank/mint) as a local mod and install the profile.
-3. Start the game. With [Mod Hub](https://mod.io/g/drg/m/mod-hub) installed, the settings are on the "Umbra" page.
+3. Start the game. With [Mod Hub](https://mod.io/g/drg/m/mod-hub) installed, the settings are on the "Umbra Shadows" page.
 
-Do not use it together with [Shadows!](https://mod.io/g/drg/m/shadows): that mod replaces the flares Umbra works on.
+Do not use it together with [Shadows!](https://mod.io/g/drg/m/shadows): that mod replaces the flares Umbra Shadows works on.
 
 ## Settings
 
@@ -74,13 +74,13 @@ You need Unreal Engine 4.27, Python 3.11 or newer and a project made from [FSD-T
    <UE_4.27>\Engine\Build\BatchFiles\Build.bat FSDEditor Win64 Development -Project=<project>\FSD.uproject -Module=BPForge
    ```
    A module-only build writes no `UE4Editor.modules` file. If the editor does not load the plugin, copy that file from another plugin's `Binaries/Win64` and change the module name to BPForge.
-3. In the template's `DRGModdingAutomationScripts/Configs`, set `ModName=Umbra` in `GlobalConfig.ini` and put `_Umbra` and `..\AssetRegistry.bin` in `PakWhiteList.ini`. `UtilityBats\MakeDefaultConfigFiles.bat` creates `LocalConfig.ini` for the engine and game paths.
+3. In the template's `DRGModdingAutomationScripts/Configs`, set `ModName=umbra-shadows` in `GlobalConfig.ini` and put `_Umbra` and `..\AssetRegistry.bin` in `PakWhiteList.ini`. `UtilityBats\MakeDefaultConfigFiles.bat` creates `LocalConfig.ini` for the engine and game paths.
 4. Generate and test the assets:
    ```
    python Tools/build_assets.py
    python Tools/umbra_test.py
    ```
-5. Cook and pack with the template's scripts. The pak lands in `DRGModdingAutomationScripts/Temp/Umbra.pak`.
+5. Cook and pack with the template's scripts. The pak lands in `DRGModdingAutomationScripts/Temp/umbra-shadows.pak`.
 
 The Blueprints live as code in `Tools/umbra_spec.py`; edit them there, not in the editor.
 

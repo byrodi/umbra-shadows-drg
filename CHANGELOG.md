@@ -17,5 +17,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Far flare shadows fade out smoothly with the engine's own shadow fade.
 - Settings page in Mod Hub.
 
-[unreleased]: https://github.com/byrodi/umbra-drg/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/byrodi/umbra-drg/releases/tag/v1.0.0
+[unreleased]: https://github.com/byrodi/umbra-shadows-drg/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/byrodi/umbra-shadows-drg/releases/tag/v1.0.0

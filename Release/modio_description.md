@@ -1,6 +1,6 @@
-# Umbra: mod.io page text
+# Umbra Shadows: mod.io page text
 
-Name: Umbra
+Name: Umbra Shadows
 Summary (mod.io limit 250 characters):
 Every flare casts round, soft shadows in its class colour; headlamps cast shadows too. Far shadows fade out smoothly, so a cave full of flares stays playable. Client-side, works in any lobby.
 
@@ -9,7 +9,7 @@ by the author; Umbra is client-side only and changes no gameplay.
 
 ## Description
 
-**Umbra** gives the caves real shadows.
+**Umbra Shadows** gives the caves real shadows.
 
 - **Every flare lights all round.** Rocks, stalactites and bugs throw shadows in every direction, like from
   a real flame, instead of the game's three narrow beams.
@@ -29,7 +29,7 @@ Shadows cost GPU time, so Umbra limits them where you cannot see them:
 - Shadows in volumetric fog are off unless you turn them on.
 - No per-frame scripts.
 
-If you need more FPS, lower **Shadow distance** on the Umbra page in Mod Hub.
+If you need more FPS, lower **Shadow distance** on the Umbra Shadows page in Mod Hub.
 
 ### Settings (Mod Hub, optional)
 
