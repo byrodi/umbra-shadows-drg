@@ -5,7 +5,7 @@
 
 Deep Rock Galactic mod: every flare casts round, soft shadows in its class colour, and headlamps cast shadows too.
 
-![A flare on the cave floor throws long shadows of rocks across the wall](.github/images/cover.jpg)
+![A Driller's yellow flare on the cave floor; a bug, a rock and a mushroom cast shadows on the wall](.github/images/cover.jpg)
 
 ## Features
 
@@ -21,6 +21,8 @@ Deep Rock Galactic mod: every flare casts round, soft shadows in its class colou
 ## Before and after
 
 The same spot with the mod off and on.
+
+![Left: the game's flare lights the rock white with no shadow. Right: Umbra Shadows lights it in the Driller's yellow and the bug casts a large shadow on it](.github/images/compare-spider.jpg)
 
 ![Left: the game's flare lights a narrow cone. Right: Umbra Shadows lights the floor all round and the rocks cast shadows](.github/images/compare-floor.jpg)
 
