@@ -1,7 +1,7 @@
 # Umbra Shadows
 
 [![Latest release](https://img.shields.io/github/v/release/byrodi/umbra-shadows-drg)](https://github.com/byrodi/umbra-shadows-drg/releases/latest)
-[![License](https://img.shields.io/github/license/byrodi/umbra-shadows-drg)](LICENSE)
+[![License](https://img.shields.io/github/license/byrodi/umbra-shadows-drg?cacheSeconds=3600)](LICENSE)
 
 Deep Rock Galactic mod: every flare casts round, soft shadows in its class colour, and headlamps cast shadows too.
 
