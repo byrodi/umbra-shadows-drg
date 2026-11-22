@@ -12,6 +12,7 @@ Deep Rock Galactic mod: every flare casts round, soft shadows in its class colou
 - Every flare lights all round and casts shadows of rocks, walls and bugs.
 - Hand flares glow in the thrower's class colour.
 - The flare gun keeps its own light and casts the same shadows.
+- A flare that burns out fades away over a few seconds instead of switching off.
 - Your headlamp and your team mates' headlamps cast shadows.
 - Far shadows fade out smoothly, so a cave full of flares stays playable.
 - Client-side only: other players in the lobby do not need it.
@@ -71,11 +72,13 @@ Frame rates read from the in-game FPS counter.
 
 ## How it works
 
-The mod changes the game's own flare and headlamp lights; it adds no lights of its own and no per-frame code.
+The mod changes the game's own flare and headlamp lights; it adds no lights of its own.
 
 1. A flare's fill light becomes one shadow light that reaches all round.
 2. The flare's three spot lights stop casting shadows and only lift the darkness.
 3. The engine's own shadow fade turns off the shadows of far flares.
+4. In the last seconds of a flare, the mod dims its lights to zero itself. This is the only per-frame code, and it
+   runs only while a flare is fading.
 
 ## Building from source
 

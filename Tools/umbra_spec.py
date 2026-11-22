@@ -30,6 +30,8 @@ POINT = "/Script/Engine.PointLightComponent"
 MESH = "/Script/Engine.MeshComponent"
 PRIMITIVE = "/Script/Engine.PrimitiveComponent"
 UMG = "/Script/UMG."
+LIGHT = "/Script/Engine.LightComponent"
+TIMELINE = "/Script/Engine.TimelineComponent"
 FLARE = "/Script/FSD.Flare"
 GUN_FLARE = "/Script/FSD.FlareGunProjectile"
 PLAYER = "/Script/FSD.PlayerCharacter"
@@ -47,7 +49,7 @@ HUBMOD_C = HUBMOD + ".Umbra_Hub_C"
 SAVE_SLOT = "Umbra"
 MOD_NAME = "Umbra Shadows"  # shown in Mod Hub; internal paths and the save slot keep "Umbra"
 MOD_AUTHOR = "rodionmasalov"
-MOD_VERSION = "0.1.0"
+MOD_VERSION = "0.2.0"
 
 # A spot light on a player is the headlamp beam when it reaches at least this far and is at most this wide.
 # Matches the game's own headlamp and the Pretty Flashlights one, also after Advanced Darkness shortens them;
@@ -107,6 +109,23 @@ CLASS_HUE = {
 }
 TERRAIN_EVERY = 15           # seconds between terrain passes
 TERRAIN_AT = 7               # first pass, after Mod Hub's own pass at 5 s
+
+# End of a flare's light. The game ends it with a short straight ramp to zero (hand flare: native code,
+# CRV_Flare_Brightness; flare gun: its Light_Anim timeline) and hides the lights 2 s later. With the mod's
+# bright all-round shadow light that looks like the light is switched off. For the last seconds the mod sets
+# the intensity itself, every frame after the game's own light update: from the level the light had when the
+# fade started down to zero along (1 - u)^3, an even fade to the eye (lightness is about the cube root of
+# luminance). The Tick runs only while a light fades.
+FADE_SLOTS = 8               # flares that can fade at once; more keep the game's own ending
+HAND_FADE_LEAD = 4.0         # s before a hand flare's light ends (Duration after it is thrown)
+HAND_FADE_AFTER = 1.8        # s after it ends; the game hides the lights 2 s after the end
+GUN_FADE_FROM = 80.0         # flare gun: Light_Anim position (0 to 90) where the fade starts
+GUN_LIGHT_END, GUN_TIMELINE_END = 88.0, 90.0  # the flare goes out at 88; the game plays 88 to 90 at rate 1, then hides
+GUN_AFTER = 2.0              # s from 88 to 90 at play rate 1
+FADE_MARGIN = 0.15           # s; a gun flare's fade ends this much before the game hides its lights
+FADE_HOLD = 1.0              # s the mod keeps a faded light at zero, until the game has hidden it
+FADE_POWER = 3.0
+TICK_GROUP = "TG_PostUpdateWork"  # after actor, timeline, timer and subsystem ticks: the mod's value wins
 
 # name, label, hint, default
 CHECKS = [
@@ -439,13 +458,226 @@ def gun_spot_tilted(pitch, yaw):
 
 
 def g_watch():
-    """Runs ten times a second: new flares, and flares the game has just reset, get the mod's light at once."""
+    """Runs ten times a second: new flares, and flares the game has just reset, get the mod's light at once.
+    Flares whose light is about to end start their fade-out."""
     g = Graph()
     g.call("on", KML + ":BooleanAND", A=ref(g.get("getActive", "ActiveInLevel")), B=ref(g.setting("Enabled")))
     g.branch("br", "on.ReturnValue")
     g.call("hand", "WatchFlares", FlareClass=FLARE, Range=ref(g.setting("FlareRange")))
     g.call("gun", "WatchFlares", FlareClass=GUN_FLARE, Range=ref(g.setting("GunFlareRange")))
-    g.flow("entry", "br", "hand", "gun")
+    g.call("fadeHand", "StartFades", FlareClass=FLARE, bGun="false")
+    g.call("fadeGun", "StartFades", FlareClass=GUN_FLARE, bGun="true")
+    g.flow("entry", "br", "hand", "gun", "fadeHand", "fadeGun")
+    # Mod off: the game drives the lights of fading flares again.
+    g.branch("brFading", g.get("getFading", "Fading"))
+    g.call("stop", "StopFades")
+    g.flow("br.else", "brFading", "stop")
+    return g.data()
+
+
+def is_mod_light(g, node_id, light):
+    """Output pin: does this light belong to the mod (fill or spot, reaching Range)? The flare's small glow
+    lights (75 to 250 cm) do not; see g_watch_flares."""
+    g.call(node_id, KML + ":GreaterEqual_FloatFloat", A=ref(g.get(node_id + "Radius", "AttenuationRadius", LOCAL_LIGHT, light)),
+           B="290.0")
+    return node_id + ".ReturnValue"
+
+
+def g_start_fades():
+    """Flares of one kind whose light is about to end get a fade slot. Each of the mod's lights keeps its present
+    level, the start of its fade, in IESBrightnessScale: a property used only with an IES light profile (flare
+    lights have none)."""
+    g = Graph()
+    g.call("all", GS + ":GetAllActorsOfClass", ActorClass=ref("entry.FlareClass"))
+    g.set("keep", "FadeActors", value="all.OutActors")
+    flare = g.loop("each", g.get("getActors", "FadeActors"))
+    g.call("due", "FlareDue", Flare=ref(flare), bGun=ref("entry.bGun"))
+    g.branch("brDue", g.get("getDue", "DueNow"))
+    g.call("known", "IsFading", Flare=ref(flare))
+    g.branch("brKnown", "known.bFading")
+    g.call("lights", ACTOR + ":K2_GetComponentsByClass", ComponentClass=POINT, target=ref(flare))
+    g.set("keepLights", "FadePoints", value="lights.ReturnValue")
+    light = g.loop("eachLight", g.get("getLights", "FadePoints"))
+    g.branch("brMine", is_mod_light(g, "mine", light))
+    g.call("store", KSL + ":SetFloatPropertyByName", Object=ref(light), PropertyName="IESBrightnessScale",
+           Value=ref(g.get("level", "Intensity", LIGHT_BASE, light)))
+    g.call("now", GS + ":GetTimeSeconds")
+    g.call("add", "AddFade", Flare=ref(flare), Start=ref("now.ReturnValue"), End=ref(g.get("getEnd", "DueEnd")))
+    g.flow("entry", "all", "keep", "each.Exec")
+    g.flow("each.LoopBody", "due", "brDue", "known")
+    g.flow("known", "brKnown")
+    g.flow("brKnown.else", "keepLights", "eachLight.Exec")
+    g.flow("eachLight.LoopBody", "brMine", "store")
+    g.flow("eachLight.Completed", "add")
+    return g.data()
+
+
+def g_flare_due():
+    """Is the light of this flare about to end? Sets DueNow, and DueEnd: the game time the fade reaches zero.
+
+    Hand flare: its light runs for Duration from the throw (native code), so the fade starts HAND_FADE_LEAD
+    before that and ends HAND_FADE_AFTER after it. Flare gun flare: read from its light timeline, whose
+    play rate is 88 / Duration until the flare goes out at 88, and 1 for the last stretch to 90.
+    """
+    g = Graph()
+    g.set("clear", "DueNow", default="false")
+    g.branch("brKind", "entry.bGun")
+    g.flow("entry", "clear", "brKind")
+    g.call("now", GS + ":GetTimeSeconds")
+
+    # --- flare gun flare
+    g.call("timelines", ACTOR + ":K2_GetComponentsByClass", ComponentClass=TIMELINE, target=ref("entry.Flare"))
+    g.set("keep", "Timelines", value="timelines.ReturnValue")
+    timeline = g.loop("each", g.get("getTimelines", "Timelines"))
+    g.call("pos", TIMELINE + ":GetPlaybackPosition", target=ref(timeline))
+    g.call("rate", KML + ":FMax", A=ref(g.call("rateNow", TIMELINE + ":GetPlayRate", target=ref(timeline)) + ".ReturnValue"), B="0.1")
+    g.call("playing", TIMELINE + ":IsPlaying", target=ref(timeline))
+    g.call("length", TIMELINE + ":GetTimelineLength", target=ref(timeline))
+    g.call("late", KML + ":GreaterEqual_FloatFloat", A=ref("pos.ReturnValue"), B=str(GUN_FADE_FROM))
+    g.call("isLight", KML + ":GreaterEqual_FloatFloat", A=ref("length.ReturnValue"), B=str(GUN_TIMELINE_END - 1.0))
+    g.call("gunOk1", KML + ":BooleanAND", A=ref("playing.ReturnValue"), B=ref("late.ReturnValue"))
+    g.call("gunOk", KML + ":BooleanAND", A=ref("gunOk1.ReturnValue"), B=ref("isLight.ReturnValue"))
+    g.branch("brGun", "gunOk.ReturnValue")
+    # Still burning: to 88 at this rate, then 2 s at rate 1. Already out: to 90 at this rate.
+    g.call("toOut", KML + ":Divide_FloatFloat", B=ref("rate.ReturnValue"),
+           A=ref(g.call("toOutPos", KML + ":Subtract_FloatFloat", A=str(GUN_LIGHT_END), B=ref("pos.ReturnValue")) + ".ReturnValue"))
+    g.call("burning", KML + ":Add_FloatFloat", A=ref("toOut.ReturnValue"), B=str(GUN_AFTER))
+    g.call("toHide", KML + ":Divide_FloatFloat", B=ref("rate.ReturnValue"),
+           A=ref(g.call("toHidePos", KML + ":Subtract_FloatFloat", A=str(GUN_TIMELINE_END), B=ref("pos.ReturnValue")) + ".ReturnValue"))
+    g.call("isBurning", KML + ":Less_FloatFloat", A=ref("pos.ReturnValue"), B=str(GUN_LIGHT_END))
+    g.call("left", KML + ":SelectFloat", A=ref("burning.ReturnValue"), B=ref("toHide.ReturnValue"), bPickA=ref("isBurning.ReturnValue"))
+    g.call("gunEnd1", KML + ":Add_FloatFloat", A=ref("now.ReturnValue"), B=ref("left.ReturnValue"))
+    g.call("gunEnd", KML + ":Subtract_FloatFloat", A=ref("gunEnd1.ReturnValue"), B=str(FADE_MARGIN))
+    g.set("gunSetEnd", "DueEnd", value="gunEnd.ReturnValue")
+    g.set("gunDue", "DueNow", default="true")
+    g.flow("brKind", "keep", "each.Exec")
+    g.flow("each.LoopBody", "brGun", "gunSetEnd", "gunDue")
+
+    # --- hand flare
+    g.node("asFlare", "cast", **{"class": FLARE})
+    g.link("entry.Flare", "asFlare.Object")
+    g.call("age", ACTOR + ":GetGameTimeSinceCreation", target=ref("entry.Flare"))
+    duration = g.get("duration", "Duration", FLARE, "asFlare.$cast")
+    g.call("from", KML + ":Subtract_FloatFloat", A=ref(duration), B=str(HAND_FADE_LEAD))
+    g.call("started", KML + ":GreaterEqual_FloatFloat", A=ref("age.ReturnValue"), B=ref("from.ReturnValue"))
+    g.call("lit", KML + ":Less_FloatFloat", A=ref("age.ReturnValue"), B=ref(duration))
+    g.call("handOk", KML + ":BooleanAND", A=ref("started.ReturnValue"), B=ref("lit.ReturnValue"))
+    g.branch("brHand", "handOk.ReturnValue")
+    g.call("handLeft", KML + ":Subtract_FloatFloat", A=ref(duration), B=ref("age.ReturnValue"))
+    g.call("handEnd1", KML + ":Add_FloatFloat", A=ref("now.ReturnValue"), B=ref("handLeft.ReturnValue"))
+    g.call("handEnd", KML + ":Add_FloatFloat", A=ref("handEnd1.ReturnValue"), B=str(HAND_FADE_AFTER))
+    g.set("handSetEnd", "DueEnd", value="handEnd.ReturnValue")
+    g.set("handDue", "DueNow", default="true")
+    g.flow("brKind.else", "asFlare", "brHand", "handSetEnd", "handDue")
+    return g.data()
+
+
+def slot(name, i):
+    return "%s%d" % (name, i)
+
+
+def g_is_fading():
+    """Has this flare a fade slot already?"""
+    g = Graph()
+    found = None
+    for i in range(FADE_SLOTS):
+        g.call(slot("same", i), KML + ":EqualEqual_ObjectObject", A=ref("entry.Flare"), B=ref(g.get(slot("get", i), slot("FadeFlare", i))))
+        same = slot("same", i) + ".ReturnValue"
+        if found is None:
+            found = same
+        else:
+            found = g.call(slot("or", i), KML + ":BooleanOR", A=ref(found), B=ref(same)) + ".ReturnValue"
+    g.link(found, "result.bFading")
+    g.flow("entry", "result")
+    return g.data()
+
+
+def g_add_fade():
+    """Puts a flare in the first free fade slot and starts the Tick. No free slot: the game's own ending."""
+    g = Graph()
+    g.set("mark", "Fading", default="true")
+    g.call("tickOn", ACTOR + ":SetActorTickEnabled", bEnabled="true")
+    g.flow("mark", "tickOn")
+    previous = "entry"
+    for i in range(FADE_SLOTS):
+        g.call(slot("valid", i), KSL + ":IsValid", Object=ref(g.get(slot("get", i), slot("FadeFlare", i))))
+        g.branch(slot("br", i), slot("valid", i) + ".ReturnValue")
+        g.set(slot("flare", i), slot("FadeFlare", i), value="entry.Flare")
+        g.set(slot("start", i), slot("FadeStart", i), value="entry.Start")
+        g.set(slot("end", i), slot("FadeEnd", i), value="entry.End")
+        g.flow(previous, slot("br", i))
+        g.flow(slot("br", i) + ".else", slot("flare", i), slot("start", i), slot("end", i), "mark")
+        previous = slot("br", i)
+    return g.data()
+
+
+def g_fade_lights():
+    """Every frame while flares fade (Tick, after the game's own light update). Each of the mod's lights of a
+    fading flare: intensity = its level at the start of the fade (IESBrightnessScale) * (1 - u)^3, u going from
+    0 to 1 between FadeStart and FadeEnd. After the fade the lights are kept at zero for FADE_HOLD, then the slot
+    is freed. No slot in use: the Tick stops."""
+    g = Graph()
+    g.call("on", KML + ":BooleanAND", A=ref(g.get("getActive", "ActiveInLevel")), B=ref(g.setting("Enabled")))
+    g.branch("brOn", "on.ReturnValue")
+    g.call("off", "StopFades")
+    g.flow("entry", "brOn")
+    g.flow("brOn.else", "off")
+    g.set("idle", "FadeBusy", default="false")
+    g.call("now", GS + ":GetTimeSeconds")
+    now = "now.ReturnValue"
+    g.flow("brOn", "idle")
+    exits = ["idle.then"]  # exec outputs that lead on to the next slot
+    for i in range(FADE_SLOTS):
+        flare = g.get(slot("flare", i), slot("FadeFlare", i))
+        start = g.get(slot("start", i), slot("FadeStart", i))
+        end = g.get(slot("end", i), slot("FadeEnd", i))
+        g.call(slot("valid", i), KSL + ":IsValid", Object=ref(flare))
+        g.branch(slot("br", i), slot("valid", i) + ".ReturnValue")
+        g.call(slot("t", i), KML + ":Subtract_FloatFloat", A=ref(now), B=ref(start))
+        g.call(slot("len", i), KML + ":FMax", B="0.05",
+               A=ref(g.call(slot("span", i), KML + ":Subtract_FloatFloat", A=ref(end), B=ref(start)) + ".ReturnValue"))
+        g.call(slot("u", i), KML + ":FClamp", Min="0.0", Max="1.0",
+               Value=ref(g.call(slot("ratio", i), KML + ":Divide_FloatFloat", A=ref(slot("t", i) + ".ReturnValue"),
+                                B=ref(slot("len", i) + ".ReturnValue")) + ".ReturnValue"))
+        g.call(slot("left", i), KML + ":Subtract_FloatFloat", A="1.0", B=ref(slot("u", i) + ".ReturnValue"))
+        g.call(slot("k", i), KML + ":MultiplyMultiply_FloatFloat", Base=ref(slot("left", i) + ".ReturnValue"), Exp=str(FADE_POWER))
+        g.set(slot("keepK", i), "FadeLevel", value=slot("k", i) + ".ReturnValue")  # once per frame, not per light
+        g.call(slot("lights", i), ACTOR + ":K2_GetComponentsByClass", ComponentClass=POINT, target=ref(flare))
+        g.set(slot("keepLights", i), "FadePoints", value=slot("lights", i) + ".ReturnValue")
+        light = g.loop(slot("each", i), g.get(slot("getLights", i), "FadePoints"))
+        g.branch(slot("brMine", i), is_mod_light(g, slot("mine", i), light))
+        g.call(slot("level", i), KML + ":Multiply_FloatFloat", A=ref(g.get(slot("from", i), "IESBrightnessScale", LIGHT, light)),
+               B=ref(g.get(slot("getK", i), "FadeLevel")))
+        g.call(slot("set", i), LIGHT + ":SetIntensity", target=ref(light), NewIntensity=ref(slot("level", i) + ".ReturnValue"))
+        g.call(slot("over", i), KML + ":Greater_FloatFloat", A=ref(now),
+               B=ref(g.call(slot("until", i), KML + ":Add_FloatFloat", A=ref(end), B=str(FADE_HOLD)) + ".ReturnValue"))
+        g.branch(slot("brOver", i), slot("over", i) + ".ReturnValue")
+        g.set(slot("free", i), slot("FadeFlare", i))
+        g.set(slot("busy", i), "FadeBusy", default="true")
+        for out_pin in exits:
+            g.link(out_pin, slot("br", i) + ".execute")
+        g.flow(slot("br", i), slot("keepK", i), slot("keepLights", i), slot("each", i) + ".Exec")
+        g.flow(slot("each", i) + ".LoopBody", slot("brMine", i), slot("set", i))
+        g.flow(slot("each", i) + ".Completed", slot("brOver", i), slot("free", i))
+        g.flow(slot("brOver", i) + ".else", slot("busy", i))
+        exits = [slot("br", i) + ".else", slot("free", i) + ".then", slot("busy", i) + ".then"]
+    g.branch("brBusy", g.get("getBusy", "FadeBusy"))
+    g.call("done", "StopFades")
+    for out_pin in exits:
+        g.link(out_pin, "brBusy.execute")
+    g.flow("brBusy.else", "done")
+    return g.data()
+
+
+def g_stop_fades():
+    """Frees every fade slot and stops the Tick. The game drives those lights again."""
+    g = Graph()
+    chain = ["entry"]
+    for i in range(FADE_SLOTS):
+        chain.append(g.set(slot("free", i), slot("FadeFlare", i)))
+    g.set("clear", "Fading", default="false")
+    g.call("tickOff", ACTOR + ":SetActorTickEnabled", bEnabled="false")
+    g.flow(*chain, "clear", "tickOff")
     return g.data()
 
 
@@ -548,7 +780,8 @@ def g_apply_flare():
     The game's flare has three spot lights in a ring (shadows, a few metres) and one fill point light
     (no shadows, 20 m; flare gun 35 m). Their intensity is animated by the flare every frame from its own
     variables: BaseIntensity (hand flare: fill and spots), LightIntensity_Point and LightIntensity_Spot
-    (flare gun). The mod sets those variables, so the game's fade-in, flicker and fade-out stay.
+    (flare gun). The mod sets those variables, so the game's fade-in and flicker stay. The last seconds of
+    the light are faded by the mod itself (see FADE_SLOTS).
 
     Chosen flare (bUpgrade and bCast): the fill becomes the one shadow light, all round, like a real flame:
     reach Range, steeper falloff, lifted 15 cm above the flare, the flare's own mesh casts no shadow.
@@ -804,6 +1037,12 @@ def g_mod_events():
     g.call("timer", KSL + ":K2_SetTimer", FunctionName="Refresh", Time="1.0", bLooping="true", Object=ref("me.self"))
     g.call("watchTimer", KSL + ":K2_SetTimer", FunctionName="Watch", Time="0.1", bLooping="true", Object=ref("me.self"))
     g.call("refresh", "Refresh")
+    # The Tick only fades flare lights: after the game's own updates, and off until a light fades.
+    g.call("tickGroup", ACTOR + ":SetTickGroup", NewTickGroup=TICK_GROUP)
+    g.call("tickOff", ACTOR + ":SetActorTickEnabled", bEnabled="false")
+    g.node("tick", "event", name="ReceiveTick", **{"class": ACTOR})
+    g.call("fade", "FadeLights")
+    g.flow("tick", "fade")
 
     # Settings page: only if Mod Hub is installed. The paths are built from strings at run time,
     # so this Blueprint has no import of Mod Hub and loads without it.
@@ -822,7 +1061,8 @@ def g_mod_events():
     g.call("spawn", GS + ":BeginDeferredActorSpawnFromClass", ActorClass=ref("asActor.$cast"),
            SpawnTransform=ref("xform.ReturnValue"), Owner=ref("me.self"))
     g.call("finish", GS + ":FinishSpawningActor", Actor=ref("spawn.ReturnValue"), SpawnTransform=ref("xform.ReturnValue"))
-    g.flow("begin", "load", "cvars", "timer", "watchTimer", "refresh", "hubApi", "brHub", "hubClass", "asActor", "spawn", "finish")
+    g.flow("begin", "load", "cvars", "tickGroup", "tickOff", "timer", "watchTimer", "refresh", "hubApi", "brHub", "hubClass",
+           "asActor", "spawn", "finish")
     return g.data()
 
 
@@ -845,7 +1085,20 @@ def mod_asset():
             t("Stale", "bool", default="false"),
             t("Meshes", "object", MESH, array=True),
             t("Actors", "object", ACTOR, array=True),
-        ],
+            # Fade-out of flare lights (see FADE_SLOTS).
+            t("Fading", "bool", default="false"),
+            t("FadeBusy", "bool", default="false"),
+            t("DueNow", "bool", default="false"),
+            t("DueEnd", "float", default="0.0"),
+            t("FadeLevel", "float", default="1.0"),
+            t("FadeActors", "object", ACTOR, array=True),
+            t("FadePoints", "object", POINT, array=True),
+            t("Timelines", "object", TIMELINE, array=True),
+        ] + [var for i in range(FADE_SLOTS) for var in (
+            t(slot("FadeFlare", i), "object", ACTOR),
+            t(slot("FadeStart", i), "float", default="0.0"),
+            t(slot("FadeEnd", i), "float", default="0.0"),
+        )],
         "functions": [
             {"name": "LoadSettings"}, {"name": "SaveSettings"}, {"name": "ApplySettings"}, {"name": "ApplyCvars"},
             {"name": "Refresh"}, {"name": "ApplyTerrain"},
@@ -858,6 +1111,11 @@ def mod_asset():
             {"name": "WatchFlares", "inputs": [t("FlareClass", "class", ACTOR), t("Range", "float")]},
             {"name": "ColourLight", "inputs": [t("Light", "object", "/Script/Engine.LightComponent"), t("Gain", "float")]},
             {"name": "AimSpot", "inputs": [t("Light", "object", SPOT), t("bUpgrade", "bool")]},
+            {"name": "StartFades", "inputs": [t("FlareClass", "class", ACTOR), t("bGun", "bool")]},
+            {"name": "FlareDue", "inputs": [t("Flare", "object", ACTOR), t("bGun", "bool")]},
+            {"name": "IsFading", "inputs": [t("Flare", "object", ACTOR)], "outputs": [t("bFading", "bool")]},
+            {"name": "AddFade", "inputs": [t("Flare", "object", ACTOR), t("Start", "float"), t("End", "float")]},
+            {"name": "FadeLights"}, {"name": "StopFades"},
         ],
         "graphs": {
             "LoadSettings": g_load_settings(), "SaveSettings": g_save_settings(),
@@ -865,6 +1123,8 @@ def mod_asset():
             "ApplyFlares": g_apply_flares(), "ApplyShadowFade": g_apply_shadow_fade(), "ApplyFlare": g_apply_flare(), "ApplyTerrain": g_apply_terrain(),
             "ApplyPawn": g_apply_pawn(), "Watch": g_watch(), "WatchFlares": g_watch_flares(),
             "ColourLight": g_colour_light(), "AimSpot": g_aim_spot(), "EventGraph": g_mod_events(),
+            "StartFades": g_start_fades(), "FlareDue": g_flare_due(), "IsFading": g_is_fading(), "AddFade": g_add_fade(),
+            "FadeLights": g_fade_lights(), "StopFades": g_stop_fades(),
         },
     }
 

@@ -9,10 +9,14 @@
 Options:
   --zoom Z            keep the middle Z of the picture (0.85 drops the HUD in the corners)
   --crop X,Y,W        crop this 16:9 box instead (source pixels; height = W * 9 / 16)
-  --hide X,Y,W,H      blur out a small HUD element (source pixels; repeat for more)
+  --hide X,Y,W,H[,R]  blur out a small HUD element (source pixels; repeat for more). R: median radius,
+                      default 9; larger text needs about half its height
   --hide1 / --hide2   the same for the first or second shot only (compare, pair)
   --gamma G           brighten the mid tones (1.0 = as shot; dark caves look good at 1.1 to 1.25)
   --glow A            soft glow around bright light, 0 to 0.5 (0.2 is subtle)
+  --top               cover: title band at the top instead of the bottom
+  --style S           cover: band (default), corner (small title, no band) or none (no text)
+  --title             pair: the mod's name at the top, for a before/after cover
 
 compare needs two shots from the same place: Umbra's "Enabled" off, then on, without moving.
 ffmpeg: Saved/Tools/ffmpeg/**/ffmpeg.exe, or set FFMPEG. Fonts: Windows' Bahnschrift and Segoe UI.
@@ -27,7 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 W, H = 1920, 1080
 TITLE_FONT = "C\\:/Windows/Fonts/bahnschrift.ttf"
 TEXT_FONT = "C\\:/Windows/Fonts/segoeuib.ttf"
-OPT = {"zoom": 1.0, "crop": None, "hide": [], "hide1": [], "hide2": [], "gamma": 1.0, "glow": 0.0}
+OPT = {"top": False, "style": "band", "title": False, "zoom": 1.0, "crop": None, "hide": [], "hide1": [], "hide2": [], "gamma": 1.0, "glow": 0.0}
 
 
 def ffmpeg():
@@ -45,12 +49,14 @@ def hide_hud(src, dst):
     and keeps the colours around them. Returns graph text and the label to continue from."""
     graph, label_now = [], src
     own = OPT["hide2"] if src.startswith("1:") else OPT["hide1"]
-    for i, (x, y, w, h) in enumerate(OPT["hide"] + own):
-        m = 12  # margin, so the median sees the surroundings
-        graph.append("[%s]split[k%s%d][p%s%d];[p%s%d]crop=%d:%d:%d:%d,median=radius=9,crop=%d:%d:%d:%d[q%s%d];"
+    for i, box in enumerate(OPT["hide"] + own):
+        x, y, w, h = box[:4]
+        radius = box[4] if len(box) > 4 else 9
+        m = max(12, radius + 4)  # margin, so the median sees the surroundings
+        graph.append("[%s]split[k%s%d][p%s%d];[p%s%d]crop=%d:%d:%d:%d,median=radius=%d,crop=%d:%d:%d:%d[q%s%d];"
                      "[k%s%d][q%s%d]overlay=%d:%d[h%s%d]"
                      % (label_now, dst, i, dst, i, dst, i, w + 2 * m, h + 2 * m, max(0, x - m), max(0, y - m),
-                        w, h, m, m, dst, i, dst, i, dst, i, x, y, dst, i))
+                        radius, w, h, m, m, dst, i, dst, i, dst, i, x, y, dst, i))
         label_now = "h%s%d" % (dst, i)
     return graph, label_now
 
@@ -116,18 +122,32 @@ def compare(game, umbra, out):
 
 def pair(game, umbra, out):
     """Same place, mod off and on, side by side. Both get exactly the same processing."""
+    title = ""
+    if OPT["title"]:
+        title = ",drawbox=x=0:y=0:w=iw:h=170:color=black@0.5:t=fill,%s" % label("UMBRA SHADOWS", "(w-tw)/2", "28", 110)
     graph = (finish("0:v", "a", True) + ";" + finish("1:v", "b", True) + ";"
-             "[a][b]hstack=inputs=2,drawbox=x=%d:y=0:w=4:h=%d:color=white@0.9:t=fill,%s,%s[o]"
-             % (W // 2 - 2, H, label("GAME", "50", "h-110", 60), label("UMBRA", "w-tw-50", "h-110", 60)))
+             "[a][b]hstack=inputs=2,drawbox=x=%d:y=0:w=4:h=%d:color=white@0.9:t=fill%s,%s,%s[o]"
+             % (W // 2 - 2, H, title, label("GAME", "50", "h-110", 60), label("UMBRA", "w-tw-50", "h-110", 60)))
     run([game, umbra], graph, out)
 
 
 def cover(src, out):
+    if OPT["style"] == "none":
+        run([src], finish("0:v", "o"), out)
+        return
+    if OPT["style"] == "corner":
+        graph = (finish("0:v", "g") + ";[g]%s,"
+                 "drawtext=fontfile='%s':text='Round soft shadows for every flare':fontsize=34:fontcolor=white@0.9:"
+                 "x=64:y=h-80:shadowcolor=black@0.8:shadowx=2:shadowy=2[o]"
+                 % (label("UMBRA SHADOWS", "60", "h-185", 92), TEXT_FONT))
+        run([src], graph, out)
+        return
+    band_y, title_y, line_y = ("0", "40", "200") if OPT["top"] else ("ih-300", "h-270", "h-110")
     graph = (finish("0:v", "g") + ";"
-             "[g]drawbox=x=0:y=ih-300:w=iw:h=300:color=black@0.45:t=fill,%s,"
+             "[g]drawbox=x=0:y=%s:w=iw:h=300:color=black@0.45:t=fill,%s,"
              "drawtext=fontfile='%s':text='Round soft shadows for every flare  ·  class colours  ·  headlamp shadows':"
-             "fontsize=40:fontcolor=white@0.92:x=80:y=h-110:shadowcolor=black@0.7:shadowx=2:shadowy=2[o]"
-             % (label("UMBRA", "80", "h-270", 150), TEXT_FONT))
+             "fontsize=40:fontcolor=white@0.92:x=80:y=%s:shadowcolor=black@0.7:shadowx=2:shadowy=2[o]"
+             % (band_y, label("UMBRA SHADOWS", "80", title_y, 130), TEXT_FONT, line_y))
     run([src], graph, out)
 
 
@@ -136,7 +156,13 @@ def parse(args):
     i = 0
     while i < len(args):
         key = args[i]
-        if key in ("--zoom", "--gamma", "--glow"):
+        if key in ("--top", "--title"):
+            OPT[key[2:]] = True
+            i += 1
+        elif key == "--style":
+            OPT["style"] = args[i + 1]
+            i += 2
+        elif key in ("--zoom", "--gamma", "--glow"):
             OPT[key[2:]] = float(args[i + 1])
             i += 2
         elif key == "--crop":

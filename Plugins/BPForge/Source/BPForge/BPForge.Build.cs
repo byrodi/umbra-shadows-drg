@@ -7,7 +7,7 @@ public class BPForge : ModuleRules
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"Core", "CoreUObject", "Engine", "UnrealEd", "BlueprintGraph", "Kismet", "KismetCompiler",
-			"UMG", "UMGEditor", "Json", "AssetRegistry", "Slate", "SlateCore", "RenderCore", "RHI"
+			"UMG", "UMGEditor", "Json", "AssetRegistry", "Slate", "SlateCore", "RenderCore", "RHI", "InputCore"
 		});
 	}
 }

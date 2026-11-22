@@ -149,6 +149,48 @@ def animate(flares, guns, chosen):
     return out
 
 
+def fade_steps():
+    """End of a flare's light: the mod fades it out itself (FadeLights, every frame).
+
+    A hand flare with Duration 2 s is due at once (its light ends 2 s from now, the fade 1.8 s later). A flare gun
+    flare gets a light timeline at 86 of 90, playing at rate 1: due, its light goes out at 88 (2 s), the game hides
+    it 2 s later. Each capture ticks the world 0.8 s; the intensity must fall smoothly to 0, the slots must
+    empty and the Tick stop. Expected hand fill (template 4.0): 4 * (1 - t / 3.8)^3.
+    """
+    out = [
+        {"spawn": TEST + "ITM_TestFlare_Engineer.ITM_TestFlare_Engineer_C", "as": "flareG", "loc": [-2600, 1500, 30],
+         "rot": [0, 90, 0]},
+        {"props": "flareG", "values": {"Duration": "2.0"}},
+        {"comp": "flareG", "name": "Light_NoShadow", "as": "flareGFill"},
+        {"comp": "flareG", "name": "SpotLight_Shadow_1", "as": "flareGSpot"},
+        {"spawn": TEST + "PRJ_TestFlareGun.PRJ_TestFlareGun_C", "as": "gunC", "loc": [-1500, 2200, 500], "rot": [0, 90, 0]},
+        {"comp": "gunC", "name": "PointLight_NoShadow", "as": "gunCFill"},
+        {"addcomp": "gunC", "class": "/Script/Engine.TimelineComponent", "as": "gunCAnim"},
+        {"call": "gunCAnim.SetTimelineLengthMode", "args": {"NewLengthMode": "TL_TimelineLength"}},
+        {"call": "gunCAnim.SetTimelineLength", "args": {"NewLength": "90.0"}},
+        {"call": "gunCAnim.SetPlaybackPosition", "args": {"NewPosition": "86.0", "bFireEvents": "False", "bFireUpdate": "False"}},
+        {"call": "gunCAnim.SetPlayRate", "args": {"NewRate": "1.0"}},
+        {"call": "gunCAnim.Play"},
+        {"print": "gunCAnim", "fields": ["TheTimeline"]},
+        {"call": "mod.Watch"},
+        {"print": "mod", "fields": ["Fading", "FadeFlare0", "FadeStart0", "FadeEnd0", "FadeFlare1", "FadeStart1", "FadeEnd1",
+                                    "FadeFlare2", "PrimaryActorTick"]},
+        {"print": "flareGFill", "fields": ["IESBrightnessScale"]}, {"print": "flareGSpot", "fields": ["IESBrightnessScale"]},
+        {"print": "gunCFill", "fields": ["IESBrightnessScale"]},
+        # Another Watch must not take a second slot for the same flares.
+        {"call": "mod.Watch"},
+        {"print": "mod", "fields": ["FadeFlare2"]},
+    ]
+    for frame in range(1, 8):
+        # The test world advances time but runs no actor ticks or timers, so the Tick's function is called here.
+        out.append(dict(CAMERA, capture=os.path.join(OUT, "umbra_fade_%d.png" % frame)))
+        out += [{"call": "mod.FadeLights"},
+                {"print": "flareGFill", "fields": ["Intensity"]}, {"print": "flareGSpot", "fields": ["Intensity"]},
+                {"print": "gunCFill", "fields": ["Intensity"]}, {"print": "mod", "fields": ["Fading", "FadeBusy"]}]
+    out.append({"print": "mod", "fields": ["Fading", "FadeFlare0", "FadeFlare1"]})
+    return out
+
+
 def steps():
     out = []
     out += box("floor", [1500, 0, -50], [60, 60, 1])
@@ -265,6 +307,7 @@ def steps():
     ]
     out += scenery_shadows(True)
     out.append(dict(CAMERA, capture=os.path.join(OUT, "umbra_1_default.png")))
+    out += fade_steps()
 
     # Settings page through the Mod Hub adapter: one shadow flare, team lamps off, hard edges, 1024 maps.
     out += [

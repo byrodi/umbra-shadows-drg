@@ -1,6 +1,8 @@
 """Installs the packed mod for local testing with mint (the mod loader that builds mods_P.pak).
 
-Usage: python Tools/install_mint.py <path to mint .exe> [--replace OldModName]
+Usage: python Tools/install_mint.py <path to mint .exe> [--replace OldModName] [--pak PakName]
+--pak installs DRGModdingAutomationScripts/Temp/<PakName>.pak (a mod packed with Tools/pack_mod.py)
+instead of the GlobalConfig.ini ModName.
 
 Steps: copies DRGModdingAutomationScripts/Temp/<ModName>.pak into mint's mods folder, adds it to the
 active mint profile (once), then asks mint to integrate that profile. Close mint and the game first.
@@ -37,10 +39,14 @@ def main():
     if "--replace" in args:
         replace = args[args.index("--replace") + 1]
         del args[args.index("--replace"):args.index("--replace") + 2]
+    mod_name = None
+    if "--pak" in args:
+        mod_name = args[args.index("--pak") + 1]
+        del args[args.index("--pak"):args.index("--pak") + 2]
     if len(args) != 1 or not os.path.isfile(args[0]):
         sys.exit(__doc__)
     mint = args[0]
-    mod_name = config_value("GlobalConfig.ini", "ModName")
+    mod_name = mod_name or config_value("GlobalConfig.ini", "ModName")
     pak = os.path.join(SCRIPTS, "Temp", mod_name + ".pak")
     if not os.path.isfile(pak):
         sys.exit("No pak at %s. Cook and pack first." % pak)
