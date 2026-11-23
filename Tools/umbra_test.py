@@ -42,6 +42,9 @@ FLARE_SPOT = dict(bUseInverseSquaredFalloff="False", InnerConeAngle="40.0", Oute
 FLARE_SPOT_ROTATIONS = ["(Pitch=-0.00038,Yaw=92.88731,Roll=-90.00046)", "(Pitch=59.99612,Yaw=-87.11185,Roll=90.00113)",
                         "(Pitch=-59.99501,Yaw=-87.11845,Roll=90.00085)"]
 CAMERA = dict(loc=[-40, 0, 170], rot=[-6, 0, 0], exposure=2.5)  # brightened: the scene is a dark cave
+SETTINGS_FIELDS = ["Enabled", "Level", "FlareColour", "OwnLamp", "TeamLamps", "SoftShadows", "TerrainShadows", "LightShafts",
+                   "ShadowDistance", "FlareRange", "HandFlares", "GunFlareRange", "GunFlares", "Quality", "FlareBrightness",
+                   "ShadowStrength", "Penumbra"]
 
 
 def box(name, loc, scale, mesh=CUBE):
@@ -54,8 +57,8 @@ def box(name, loc, scale, mesh=CUBE):
 CLASSES = ["Driller", "Engineer", "Gunner", "Scout"]
 # The game's flare gun flare (PRJ_FlareGun_Projectile01).
 GUN_FILL = dict(bUseInverseSquaredFalloff="False", AttenuationRadius="3500.0", Intensity="3.5",
-                LightColor="(R=222,G=253,B=255,A=255)", CastShadows="False", IndirectLightingIntensity="6.0",
-                Mobility="Movable")
+                LightColor="(R=222,G=253,B=255,A=255)", CastShadows="False", CastStaticShadows="False",
+                CastDynamicShadows="False", IndirectLightingIntensity="6.0", Mobility="Movable")
 GUN_SPOT = dict(FLARE_SPOT, AttenuationRadius="900.0", Intensity="35.0", ShadowBias="0.5",
                 LightColor="(R=255,G=223,B=106,A=255)")
 GUN_SPOT_ROTATIONS = ["(Pitch=0,Yaw=90,Roll=90)", "(Pitch=60,Yaw=-90,Roll=-90)", "(Pitch=-60,Yaw=-90,Roll=-90)"]
@@ -114,7 +117,9 @@ def luminance(owner, amount):
 
 
 def defaults():
-    return {name: default for name, _, _, _, _, _, default in spec.SLIDERS}
+    out = {name: default for name, _, _, _, _, _, default in spec.SLIDERS}
+    out.update({name: default for name, _, default in spec.LEVEL_SETTINGS})
+    return out
 
 
 def game_intensities(owner, chosen, gun):
@@ -239,12 +244,28 @@ def steps():
         {"print": "flareFSpot", "fields": ["AttenuationRadius", "LightColor", "OuterConeAngle", "CastShadows"]},
         {"comp": "flareF", "name": "Light_NoShadow", "as": "flareFFill"},
         {"print": "flareFFill", "fields": ["AttenuationRadius", "CastShadows"]},
+        # The flare gun puts its own intensities back when its light timeline starts, 2.5 s after it is fired.
+        # Without a fresh timeline Watch leaves the variables alone (3.5 stays); with one it applies the mod's again.
+        {"props": "gunA", "values": {"LightIntensity_Point": "3.5", "LightIntensity_Spot": "35.0"}},
+        {"call": "mod.Watch"},
+        {"print": "gunA", "fields": ["LightIntensity_Point"]},
+        {"addcomp": "gunA", "class": "/Script/Engine.TimelineComponent", "as": "gunAAnim"},
+        {"call": "gunAAnim.SetTimelineLengthMode", "args": {"NewLengthMode": "TL_TimelineLength"}},
+        {"call": "gunAAnim.SetTimelineLength", "args": {"NewLength": "90.0"}},
+        {"call": "gunAAnim.SetPlaybackPosition", "args": {"NewPosition": "0.2", "bFireEvents": "False", "bFireUpdate": "False"}},
+        {"call": "gunAAnim.SetPlayRate", "args": {"NewRate": "1.17"}},
+        {"call": "gunAAnim.Play"},
+        {"call": "mod.Watch"},
+        {"print": "gunA", "fields": ["LightIntensity_Point", "LightIntensity_Spot"]},
+        # The test world runs no component ticks, so the timeline would stay fresh: stop it.
+        {"call": "gunAAnim.Stop"},
     ]
 
     def flare_report(fields_spot, fields_fill):
         report = []
         for name in list(flares) + list(guns):
-            report.append({"print": name + "Spot", "fields": fields_spot})
+            if fields_spot:
+                report.append({"print": name + "Spot", "fields": fields_spot})
             if fields_fill:
                 report.append({"print": name + "Fill", "fields": fields_fill})
         return report
@@ -277,11 +298,12 @@ def steps():
     # The mod. BeginPlay runs on spawn.
     out += [
         {"spawn": MOD + "InitCave.InitCave_C", "as": "mod"},
-        {"call": "mod.SaveSettings"},
         {"get": "mod.Settings", "as": "settings"},
-        {"print": "settings", "fields": ["Enabled", "OwnLamp", "TeamLamps", "SoftShadows", "TerrainShadows",
-                                         "LightShafts", "ShadowDistance", "FlareRange", "GunFlareRange", "FlareColour", "FlareBrightness",
-                                         "ShadowStrength", "Penumbra", "Quality"]},
+        # An old save with hand-set values: the level puts its own values back (ApplyLevel, also run on load).
+        {"props": "settings", "values": {"Level": "1.0", "LightShafts": "True", "ShadowDistance": "55.0", "TeamLamps": "False"}},
+        {"call": "mod.ApplyLevel"},
+        {"call": "mod.SaveSettings"},
+        {"print": "settings", "fields": SETTINGS_FIELDS},
         {"cvar": "r.Shadow.FilterMethod"}, {"cvar": "r.Shadow.MaxResolution"},
         {"cvar": "r.Shadow.FadeResolution"}, {"cvar": "r.Shadow.MinResolution"},
     ]
@@ -293,13 +315,23 @@ def steps():
         {"print": "mateLamp", "fields": ["CastShadows", "SourceRadius"]},
     ]
     out += flare_report(["CastShadows", "AttenuationRadius", "LightColor", "OuterConeAngle", "RelativeRotation"],
-                        ["CastShadows", "AttenuationRadius", "LightFalloffExponent", "ShadowResolutionScale", "LightColor",
-                         "bCastVolumetricShadow", "RelativeLocation"])
+                        ["CastShadows", "CastDynamicShadows", "AttenuationRadius", "LightFalloffExponent",
+                         "ShadowResolutionScale", "LightColor", "bCastVolumetricShadow", "RelativeLocation"])
     for name in flares:
         out.append({"print": name, "fields": ["BaseIntensity"]})
     for name in guns:
         out.append({"print": name, "fields": ["LightIntensity_Point", "LightIntensity_Spot"]})
     out.append({"print": "flareAMesh", "fields": ["CastShadow"]})
+    # A flare that turns (flies, rolls) turns the lift of its shadow light with it. Watch puts the light back
+    # above the flare: RelativeLocation stays after the turn and changes after Watch. Then the flare turns back.
+    out += [{"print": "flareAFill", "fields": ["RelativeLocation"]},
+            {"call": "flareA.K2_SetActorRotation", "args": {"NewRotation": "(Pitch=90,Yaw=90,Roll=0)", "bTeleportPhysics": "True"}},
+            {"print": "flareAFill", "fields": ["RelativeLocation"]},
+            {"call": "mod.Watch"},
+            {"print": "flareAFill", "fields": ["RelativeLocation"]},
+            {"call": "flareA.K2_SetActorRotation", "args": {"NewRotation": "(Pitch=0,Yaw=90,Roll=0)", "bTeleportPhysics": "True"}},
+            {"call": "mod.Watch"},
+            {"print": "flareAFill", "fields": ["RelativeLocation"]}]
     out += animate(flares, guns, set(flares) | set(guns))
     out += [
         {"call": "mod.ApplyTerrain"},
@@ -309,24 +341,41 @@ def steps():
     out.append(dict(CAMERA, capture=os.path.join(OUT, "umbra_1_default.png")))
     out += fade_steps()
 
-    # Settings page through the Mod Hub adapter: one shadow flare, team lamps off, hard edges, 1024 maps.
+    # Settings page through the Mod Hub adapter: the quality slider writes the level's settings.
     out += [
         {"find": MOD + "UI/Umbra_Hub.Umbra_Hub_C", "as": "hub"},
         {"call": "hub.GetModPages"},
         {"get": "hub.Page", "as": "page"},
+        {"get": "page.ValLevel", "as": "valLevel"},
         {"print": "page", "fields": ["Mod"]},
-        {"call": "page.SldShadowDistance_K2Node", "args": {"Value": "40.0"}},
-        {"call": "page.ChkTeamLamps_K2Node", "args": {"bIsChecked": "False"}},
-        {"call": "page.ChkSoftShadows_K2Node", "args": {"bIsChecked": "False"}},
-        {"call": "page.SldQuality_K2Node", "args": {"Value": "1.0"}},
-        {"print": "settings", "fields": ["ShadowDistance", "TeamLamps", "SoftShadows", "Quality"]},
+        {"print": "valLevel", "fields": ["Text"]},
+        # Low: no team lamps, hard edges, 2 hand flares and no flare gun flare with shadows.
+        {"call": "page.SldLevel_K2Node", "args": {"Value": "0.0"}},
+        {"print": "valLevel", "fields": ["Text"]},
+        {"print": "settings", "fields": SETTINGS_FIELDS},
         {"cvar": "r.Shadow.FilterMethod"}, {"cvar": "r.Shadow.MaxResolution"},
         {"cvar": "r.Shadow.FadeResolution"}, {"cvar": "r.Shadow.MinResolution"},
     ]
     out += camera(2)
     out.append({"print": "mateLamp", "fields": ["CastShadows"]})
-    out += flare_report(["CastShadows"], None)
-    out.append(dict(CAMERA, capture=os.path.join(OUT, "umbra_2_one_flare_hard.png")))
+    out += flare_report(None, ["CastShadows", "AttenuationRadius"])
+    out.append(dict(CAMERA, capture=os.path.join(OUT, "umbra_2_low.png")))
+    # Ultra: every hand flare, 4 flare gun flares, fog shadows. The map size stays the game's.
+    out += [
+        {"call": "page.SldLevel_K2Node", "args": {"Value": "3.0"}},
+        {"print": "valLevel", "fields": ["Text"]},
+        {"print": "settings", "fields": SETTINGS_FIELDS},
+        {"cvar": "r.Shadow.FilterMethod"}, {"cvar": "r.Shadow.MaxResolution"},
+    ]
+    out += camera(4)
+    out += flare_report(None, ["CastShadows", "bCastVolumetricShadow"])
+    out.append(dict(CAMERA, capture=os.path.join(OUT, "umbra_3_ultra.png")))
+    # Reset: Medium again.
+    out += [
+        {"call": "page.BtnReset_K2Node", "args": {}},
+        {"print": "valLevel", "fields": ["Text"]},
+        {"print": "settings", "fields": ["Level", "TeamLamps", "HandFlares", "GunFlares", "Quality"]},
+    ]
 
     # Enabled off: the game's own state.
     out.append({"call": "page.ChkEnabled_K2Node", "args": {"bIsChecked": "False"}})
@@ -346,7 +395,14 @@ def steps():
         {"print": "flareEFill", "fields": ["AttenuationRadius"]},
         {"print": "gunASpot", "fields": ["CastShadows", "LightColor", "ShadowBias", "InnerConeAngle", "OuterConeAngle",
                                          "RelativeRotation"]},
-        {"print": "gunAFill", "fields": ["AttenuationRadius", "LightColor"]},
+        {"print": "gunAFill", "fields": ["AttenuationRadius", "LightColor", "CastShadows"]},
+    ]
+    # Space Rig after a mission: the mod is on with soft shadows, but the rig gets the game's filter (0).
+    out += [
+        {"call": "page.ChkEnabled_K2Node", "args": {"bIsChecked": "True"}},
+        {"cvar": "r.Shadow.FilterMethod"},
+        {"spawn": MOD + "InitSpacerig.InitSpacerig_C", "as": "rig"},
+        {"cvar": "r.Shadow.FilterMethod"},
     ]
     return out
 

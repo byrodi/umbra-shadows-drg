@@ -39,19 +39,23 @@ Do not use it together with [Shadows!](https://mod.io/g/drg/m/shadows): that mod
 
 ## Settings
 
-All settings apply at once in a mission. Without Mod Hub the mod runs with the defaults.
+All settings apply at once in a mission. Without Mod Hub the mod runs on Medium.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Shadow distance | 25 m | Flare shadows fade out beyond this. Lower it for more FPS. |
-| Flare shadow range | 14 m | How far a hand flare's shadow light reaches. |
-| Flare gun shadow range | 20 m | The same for flare gun flares. |
+| Enabled | on | Off gives the lights back to the game. |
+| Shadow quality | Medium | Low gives the most FPS. See the table below. |
 | Class colour | 1 | 0 keeps the game's colours, 1 is the full class colour, up to 2 is brighter. |
-| Flare brightness | 1 | Flare light compared with the game. |
-| Flare shadow strength | 0.75 | Share of the light that casts shadows. Lower lifts the shadows. |
-| Light shafts in fog | off | Shadows in volumetric fog. Looks good, costs GPU time. |
 
-Headlamp shadows, team headlamp shadows, soft penumbra and cave wall shadows can be switched off on the same page.
+| | Low | Medium | High | Ultra |
+| --- | --- | --- | --- | --- |
+| Hand flares with shadows (nearest) | 2 | 4 | 6 | all |
+| Flare gun flares with shadows (nearest) | 0 | 1 | 2 | 4 |
+| Flare shadows fade out beyond | 15 m | 20 m | 25 m | 40 m |
+| Team headlamp shadows, soft edges | off | on | on | on |
+| Shadows in fog | off | off | off | on |
+
+Flares without a shadow still light the cave the same way. Your own headlamp and cave walls cast shadows on every level.
 
 ## Performance
 
