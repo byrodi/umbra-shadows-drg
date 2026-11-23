@@ -1,0 +1,105 @@
+# Uploads a published GitHub release to mod.io: the release's .zip (or its .pak, zipped here) becomes a new mod.io
+# file, with the tag as the version (v1.2.3 -> 1.2.3) and the release notes as the changelog. The pak is built
+# locally (it needs Unreal Engine and the game), so this only ships what the release already holds.
+# Needs the repository secret MODIO_TOKEN: a mod.io personal access token with write access
+# (mod.io > My account > Access > Personal access tokens).
+# Run it again by hand (Actions > mod.io upload > Run workflow) with a tag; a version mod.io already has is skipped.
+name: mod.io upload
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to upload (for example v0.3.0)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: modio-${{ github.event.release.tag_name || inputs.tag }}
+
+env:
+  MODIO_API: https://g-2475.modapi.io/v1   # Deep Rock Galactic's own mod.io domain (api.mod.io is deprecated)
+  MODIO_GAME_ID: "2475"
+  MODIO_MOD_ID: "6541754"                  # Umbra Shadows
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.release.prerelease }}
+    steps:
+      - name: Check the token
+        env:
+          MODIO_TOKEN: ${{ secrets.MODIO_TOKEN }}
+        run: |
+          if [ -z "$MODIO_TOKEN" ]; then
+            echo "::error::Repository secret MODIO_TOKEN is not set."
+            exit 1
+          fi
+
+      - name: Version
+        id: version
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip a version mod.io already has
+        id: known
+        env:
+          MODIO_TOKEN: ${{ secrets.MODIO_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          count=$(curl -sS --fail-with-body -G "$MODIO_API/games/$MODIO_GAME_ID/mods/$MODIO_MOD_ID/files" \
+            -H "Authorization: Bearer $MODIO_TOKEN" -H "Accept: application/json" \
+            --data-urlencode "version=$VERSION" | jq '.result_total')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" != "0" ]; then echo "mod.io already has version $VERSION; nothing to upload."; fi
+
+      - name: Download the release file
+        if: steps.known.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir dist
+          # The release may still be getting its files when this starts: wait up to two minutes for them.
+          for try in $(seq 1 12); do
+            gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D dist -p '*.zip' -p '*.pak' --clobber || true
+            ls dist/*.zip dist/*.pak >/dev/null 2>&1 && break
+            sleep 10
+          done
+          zip=$(ls dist/*.zip 2>/dev/null | head -n 1 || true)
+          if [ -z "$zip" ]; then
+            pak=$(ls dist/*.pak 2>/dev/null | head -n 1 || true)
+            if [ -z "$pak" ]; then echo "::error::Release $TAG has no .zip or .pak file."; exit 1; fi
+            zip="dist/${GITHUB_REPOSITORY#*/}-$VERSION.zip"
+            (cd dist && zip -9 "$(basename "$zip")" "$(basename "$pak")")
+          fi
+          echo "ZIP=$zip" >> "$GITHUB_ENV"
+          unzip -l "$zip"
+
+      - name: Changelog from the release notes
+        if: steps.known.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body -q .body > changelog.md
+          [ -s changelog.md ] || echo "See https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" > changelog.md
+          cat changelog.md
+
+      - name: Upload to mod.io
+        if: steps.known.outputs.count == '0'
+        env:
+          MODIO_TOKEN: ${{ secrets.MODIO_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          curl -sS --fail-with-body -X POST "$MODIO_API/games/$MODIO_GAME_ID/mods/$MODIO_MOD_ID/files" \
+            -H "Authorization: Bearer $MODIO_TOKEN" -H "Accept: application/json" \
+            -F "filedata=@$ZIP" --form-string "version=$VERSION" -F "changelog=<changelog.md" \
+            --form-string "active=true" -o response.json
+          jq '{id, version, filename, filesize, md5: .filehash.md5}' response.json
+          echo "Uploaded $(jq -r .filename response.json) as version $VERSION: https://mod.io/g/drg/m/$(curl -sS \
+            "$MODIO_API/games/$MODIO_GAME_ID/mods/$MODIO_MOD_ID" -H "Authorization: Bearer $MODIO_TOKEN" \
+            -H "Accept: application/json" | jq -r .name_id)" >> "$GITHUB_STEP_SUMMARY"
