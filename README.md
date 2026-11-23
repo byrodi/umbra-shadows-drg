@@ -86,21 +86,19 @@ The mod changes the game's own flare and headlamp lights; it adds no lights of i
 
 ## Building from source
 
-You need Unreal Engine 4.27, Python 3.11 or newer and a project made from [FSD-Template](https://github.com/DRG-Modding/FSD-Template).
+The mod is built with drg-toolkit, the author's own workspace for DRG mods (Unreal Engine 4.27, Python 3.11 or
+newer, the BPForge editor plugin that writes Blueprints from a spec, and the `drg` command). It is not published
+on its own. This repository sits in its `mods/` folder and has the mod's manifest `drgmod.toml`
+(name, version, pak name, test).
 
-1. Copy `Content/_Umbra`, `Plugins/BPForge` and `Tools` into the template project.
-2. Build the BPForge editor plugin (it writes Blueprints from a spec):
-   ```
-   <UE_4.27>\Engine\Build\BatchFiles\Build.bat FSDEditor Win64 Development -Project=<project>\FSD.uproject -Module=BPForge
-   ```
-   A module-only build writes no `UE4Editor.modules` file. If the editor does not load the plugin, copy that file from another plugin's `Binaries/Win64` and change the module name to BPForge.
-3. In the template's `DRGModdingAutomationScripts/Configs`, set `ModName=umbra-shadows` in `GlobalConfig.ini` and put `_Umbra` and `..\AssetRegistry.bin` in `PakWhiteList.ini`. `UtilityBats\MakeDefaultConfigFiles.bat` creates `LocalConfig.ini` for the engine and game paths.
-4. Generate and test the assets:
-   ```
-   python Tools/build_assets.py
-   python Tools/umbra_test.py
-   ```
-5. Cook and pack with the template's scripts. The pak lands in `DRGModdingAutomationScripts/Temp/umbra-shadows.pak`.
+```
+drg build umbra            compile check, writes nothing
+drg build umbra --save     regenerate Content/_Umbra from Tools/umbra_spec.py
+drg test umbra             headless world test (Tools/umbra_test.py), checks the expected values
+drg pack umbra             cook and pack umbra-shadows.pak
+drg install umbra          put the pak into the active mint profile
+drg release umbra          zip the pak to Release/umbra-shadows-<version>.zip
+```
 
 The Blueprints live as code in `Tools/umbra_spec.py`; edit them there, not in the editor.
 

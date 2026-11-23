@@ -1,7 +1,8 @@
 """Writes the BPForge spec (JSON) for the Umbra mod: real shadows with soft edges from headlamps and flares.
 
-Usage: python umbra_spec.py <out.json>
-The spec is the source of the mod's Blueprints. Edit here, then run Tools/build_assets.py.
+Usage: python umbra_spec.py <out.json>   (normally run by drg-toolkit: drg build umbra)
+The spec is the source of the mod's Blueprints. Edit here, then run drg build umbra (check) or
+drg build umbra --save (writes the assets). Name, author and version come from drgmod.toml.
 
 How it fits the other mods (read from their cooked Blueprints, see README "Other mods"):
 - Pretty Flashlights adds its own headlamp spot lights and never turns their shadows on by itself.
@@ -13,7 +14,11 @@ import json
 import math
 import sys
 
-HUB = "/Game/_ModHub/"
+from drgkit import mod as drgmod
+from drgkit.bp import dsl, modhub
+from drgkit.bp.dsl import ref, t
+from drgkit.bp.modhub import iface
+
 MOD = "/Game/_Umbra/"
 
 KSL = "/Script/Engine.KismetSystemLibrary"
@@ -48,9 +53,9 @@ HUBMOD = MOD + "UI/Umbra_Hub"
 HUBMOD_C = HUBMOD + ".Umbra_Hub_C"
 
 SAVE_SLOT = "Umbra"
-MOD_NAME = "Umbra Shadows"  # shown in Mod Hub; internal paths and the save slot keep "Umbra"
-MOD_AUTHOR = "rodionmasalov"
-MOD_VERSION = "0.3.0"
+# From drgmod.toml. MOD_NAME is shown in Mod Hub; internal paths and the save slot keep "Umbra".
+_MOD = drgmod.current()
+MOD_NAME, MOD_AUTHOR, MOD_VERSION = _MOD.name, _MOD.author, _MOD.full_version
 
 # A spot light on a player is the headlamp beam when it reaches at least this far and is at most this wide.
 # Matches the game's own headlamp and the Pretty Flashlights one, also after Advanced Darkness shortens them;
@@ -180,89 +185,10 @@ LEVEL_SETTINGS = [(name, "bool" if isinstance(values[0], bool) else "float", val
                   for name, values in LEVELS.items()]
 
 
-def iface(name):
-    return HUB + name + "." + name + "_C"
-
-
-def t(name, typ, cls=None, **extra):
-    out = {"name": name, "type": typ}
-    if cls:
-        out["class"] = cls
-    out.update(extra)
-    return out
-
-
-class Graph:
-    """Small helper to write nodes, links and pin defaults."""
-
-    def __init__(self):
-        self.nodes, self.links, self.defaults = [], [], {}
-        self.settings = None
-
-    def node(self, node_id, kind, **fields):
-        self.nodes.append(dict(id=node_id, k=kind, **fields))
-        return node_id
-
-    def call(self, node_id, fn, **pins):
-        """Function call. Pin values made with ref() are links, everything else is a pin default."""
-        self.node(node_id, "call", fn=fn)
-        for pin, value in pins.items():
-            pin = "self" if pin == "target" else pin  # the object the function is called on
-            if isinstance(value, str) and value.startswith("@"):
-                self.link(value[1:], "%s.%s" % (node_id, pin))
-            else:
-                self.defaults["%s.%s" % (node_id, pin)] = value
-        return node_id
-
-    def get(self, node_id, var, cls=None, target=None):
-        self.node(node_id, "get", var=var, **({"class": cls} if cls else {}))
-        if target:
-            self.link(target, node_id + ".self")
-        return node_id + "." + var
-
-    def set(self, node_id, var, cls=None, target=None, value=None, default=None):
-        self.node(node_id, "set", var=var, **({"class": cls} if cls else {}))
-        if target:
-            self.link(target, node_id + ".self")
-        if value:
-            self.link(value, node_id + "." + var)
-        if default is not None:
-            self.defaults["%s.%s" % (node_id, var)] = default
-        return node_id
-
-    def setting(self, name):
-        """Output pin with the value of a setting (reads Settings once per graph)."""
-        if self.settings is None:
-            self.settings = self.get("getSettings", "Settings")
-        return self.get("setting" + name, name, SETTINGS_C, self.settings)
-
-    def loop(self, node_id, array):
-        self.node(node_id, "macro", name="ForEachLoop")
-        self.link(array, node_id + ".Array")
-        return node_id + ".Array Element"
-
-    def branch(self, node_id, condition):
-        self.node(node_id, "branch")
-        self.link(condition, node_id + ".Condition")
-        return node_id
-
-    def link(self, a, b):
-        self.links.append([a, b])
-
-    def flow(self, *steps):
-        """Chain execution: each step is a node id, or 'node.pin' for a non-default pin."""
-        for a, b in zip(steps, steps[1:]):
-            out_pin = a if "." in a else a + ".then"
-            in_pin = b if "." in b else b + ".execute"
-            self.link(out_pin, in_pin)
-
-    def data(self):
-        return {"nodes": self.nodes, "links": self.links, "defaults": self.defaults}
-
-
-def ref(pin):
-    """Marks a call argument as a link to another node's pin."""
-    return "@" + pin
+class Graph(dsl.Graph):
+    """drgkit Graph as Umbra uses it: None pin values are written as null, setting() reads Umbra_Settings."""
+    keep_none = True
+    settings_class = SETTINGS_C
 
 
 # --------------------------------------------------------------------------- settings object
@@ -278,20 +204,7 @@ def settings_asset():
 # --------------------------------------------------------------------------- mod actor
 
 def g_load_settings():
-    g = Graph()
-    g.call("load", GS + ":LoadGameFromSlot", SlotName=SAVE_SLOT, UserIndex="0")
-    g.node("castL", "cast", **{"class": SETTINGS_C})
-    g.link("load.ReturnValue", "castL.Object")
-    g.set("setL", "Settings", value="castL.$cast")
-    g.call("create", GS + ":CreateSaveGameObject", SaveGameClass=SETTINGS_C)
-    g.node("castC", "cast", **{"class": SETTINGS_C})
-    g.link("create.ReturnValue", "castC.Object")
-    g.set("setC", "Settings", value="castC.$cast")
-    # The level decides everything not on the page, also in an old save with hand-set values.
-    g.call("level", "ApplyLevel")
-    g.flow("entry", "load", "castL", "setL", "level")
-    g.flow("castL.CastFailed", "create", "castC", "setC", "level")
-    return g.data()
+    return modhub.g_load_settings(SETTINGS_C, SAVE_SLOT, then=[("level", "ApplyLevel")], check_exists=False)
 
 
 def level_index(g, prefix, level_pin):
@@ -336,10 +249,7 @@ def g_apply_level():
 
 
 def g_save_settings():
-    g = Graph()
-    g.call("save", GS + ":SaveGameToSlot", SlotName=SAVE_SLOT, UserIndex="0", SaveGameObject=ref(g.get("getS", "Settings")))
-    g.flow("entry", "save")
-    return g.data()
+    return modhub.g_save_settings(SAVE_SLOT, check_valid=False)
 
 
 def g_apply_settings():
@@ -1224,23 +1134,8 @@ def g_mod_events():
 
     # Settings page: only if Mod Hub is installed. The paths are built from strings at run time,
     # so this Blueprint has no import of Mod Hub and loads without it.
-    def soft_load(node_id, path):
-        g.call(node_id + "Path", KSL + ":MakeSoftClassPath", PathString=path)
-        g.call(node_id + "Ref", KSL + ":Conv_SoftClassPathToSoftClassRef", SoftClassPath=ref(node_id + "Path.ReturnValue"))
-        g.call(node_id, KSL + ":LoadClassAsset_Blocking", AssetClass=ref(node_id + "Ref.ReturnValue"))
-
-    soft_load("hubApi", iface("IHubMod"))
-    g.call("hubValid", KSL + ":IsValidClass", Class=ref("hubApi.ReturnValue"))
-    g.branch("brHub", "hubValid.ReturnValue")
-    soft_load("hubClass", HUBMOD_C)
-    g.node("asActor", "classcast", **{"class": ACTOR})
-    g.link("hubClass.ReturnValue", "asActor.Class")
-    g.call("xform", KML + ":MakeTransform")
-    g.call("spawn", GS + ":BeginDeferredActorSpawnFromClass", ActorClass=ref("asActor.$cast"),
-           SpawnTransform=ref("xform.ReturnValue"), Owner=ref("me.self"))
-    g.call("finish", GS + ":FinishSpawningActor", Actor=ref("spawn.ReturnValue"), SpawnTransform=ref("xform.ReturnValue"))
-    g.flow("begin", "load", "cvars", "tickGroup", "tickOff", "timer", "watchTimer", "refresh", "hubApi", "brHub", "hubClass",
-           "asActor", "spawn", "finish")
+    steps = modhub.spawn_hub(g, HUBMOD_C, "me.self")
+    g.flow("begin", "load", "cvars", "tickGroup", "tickOff", "timer", "watchTimer", "refresh", *steps)
     return g.data()
 
 
@@ -1319,55 +1214,9 @@ def mod_asset():
 
 # --------------------------------------------------------------------------- Mod Hub adapter
 
-def g_hub_events():
-    g = Graph()
-    g.node("begin", "event", name="ReceiveBeginPlay", **{"class": ACTOR})
-    g.call("owner", ACTOR + ":GetOwner")
-    g.node("asMod", "cast", **{"class": MOD_C})
-    g.link("owner.ReturnValue", "asMod.Object")
-    g.set("setCore", "Core", value="asMod.$cast")
-    g.flow("begin", "asMod", "setCore")
-
-    g.node("closed", "event", name="ModHubClosed", **{"class": iface("IHubMod")})
-    g.call("save", MOD_C + ":SaveSettings", target=ref(g.get("getCore", "Core")))
-    g.flow("closed", "save")
-    return g.data()
-
-
-def g_mod_info():
-    g = Graph()
-    g.flow("entry", "result")
-    g.defaults.update({"result.ModName": MOD_NAME, "result.ModAuthor": MOD_AUTHOR, "result.ModVersion": MOD_VERSION})
-    return g.data()
-
-
-def g_mod_pages():
-    """Creates the settings page on first request and hands it to the hub."""
-    g = Graph()
-    g.call("valid", KSL + ":IsValid", Object=ref(g.get("getPage", "Page")))
-    g.branch("br", "valid.ReturnValue")
-    g.call("create", UMG + "WidgetBlueprintLibrary:Create", WidgetType=PAGE_C)
-    g.set("setPage", "Page", value="create.ReturnValue")
-    g.node("cast", "cast", **{"class": PAGE_C})
-    g.link(g.get("getPage2", "Page"), "cast.Object")
-    g.set("setMod", "Mod", PAGE_C, "cast.$cast", g.get("getCore", "Core"))
-    g.call("sync", PAGE_C + ":Sync", target=ref("cast.$cast"))
-    g.node("arr", "makearray", n=1)
-    g.link("arr.Array", "result.HubPages")
-    g.link("cast.$cast", "arr.[0]")
-    g.flow("entry", "br", "cast", "setMod", "sync", "result")
-    g.flow("br.else", "create", "setPage", "cast")
-    g.flow("cast.CastFailed", "result")
-    return g.data()
-
-
 def hub_asset():
     """Registers the mod and its settings page with Mod Hub. Spawned by the mod only when Mod Hub exists."""
-    return {
-        "kind": "blueprint", "path": HUBMOD, "parent": ACTOR, "interfaces": [iface("IHubMod")],
-        "variables": [t("Core", "object", MOD_C), t("Page", "object", UMG + "UserWidget")],
-        "graphs": {"EventGraph": g_hub_events(), "GetModInfo": g_mod_info(), "GetModPages": g_mod_pages()},
-    }
+    return modhub.hub_asset(HUBMOD, MOD_C, PAGE_C, MOD_NAME, MOD_AUTHOR, MOD_VERSION)
 
 
 # --------------------------------------------------------------------------- settings page
@@ -1504,19 +1353,13 @@ def g_page_events():
 
 
 def page_asset():
-    info = Graph()
-    info.flow("entry", "result")
-    info.defaults["result.PageName"] = MOD_NAME
-    mode = Graph()
-    mode.flow("entry", "result")
-    mode.defaults["result.bStretchToContainer"] = "true"
     return {
         "kind": "widget", "path": PAGE, "parent": UMG + "UserWidget", "interfaces": [iface("IHubPageWidget")],
         "variables": [t("Mod", "object", MOD_C)],
         "functions": [{"name": "Sync"}],
         "tree": page_tree(),
         "graphs": {"Sync": g_page_sync(), "EventGraph": g_page_events(),
-                   "GetPageInfo": info.data(), "GetContainerMode": mode.data()},
+                   "GetPageInfo": modhub.g_page_info(MOD_NAME), "GetContainerMode": modhub.g_container_mode()},
     }
 
 

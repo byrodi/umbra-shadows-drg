@@ -1,0 +1,19 @@
+# Umbra Shadows: manifest for drg-toolkit (drg build umbra, drg test umbra, drg pack umbra ...).
+id = "umbra"
+name = "Umbra Shadows"          # shown in Mod Hub
+version = "0.3.0"               # the only place of the version; umbra_spec.py reads it
+author = "rodionmasalov"
+folder = "_Umbra"               # /Game/_Umbra: never rename, players' settings depend on it
+prefix = "Umbra_"
+pak = "umbra-shadows"
+asset_registry = true           # the released paks carry AssetRegistry.bin
+content_in_repo = true          # build --save copies ue/Content/_Umbra to Content/_Umbra
+spec = "Tools/umbra_spec.py"
+spec_args = []
+keep = []
+markers = ["_Umbra", "Umbra_"]
+# Set by the mod on every level load; no other known mod sets them.
+cvars = ["r.Shadow.FilterMethod", "r.Shadow.FadeResolution", "r.Shadow.MinResolution", "r.Shadow.MaxResolution"]
+
+[test]
+spec = "Tools/umbra_test.py"

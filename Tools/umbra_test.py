@@ -2,21 +2,21 @@
 
 Builds a small dark room in a throwaway world with the light values of the game and of the mods it
 must live with (Pretty Flashlights headlamp, the game's flare), runs the mod's logic and prints the
-results as "TEST ..." lines. Also renders pictures to Saved/Test/.
+results as "TEST ..." lines. Also renders pictures to ue/Saved/Test/umbra (or env DRG_TEST_OUT).
 
-Usage: python Tools/umbra_test.py            (needs the assets from build_assets.py)
+Usage: drg test umbra   (runs: python Tools/umbra_test.py <out.json>; needs the assets of drg build umbra --save)
+Writes the test spec to <out.json> and the expected TEST values to <out.json>.expect.json.
 This checks logic and look. It does not measure in-game performance.
 """
 import json
 import os
-import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import umbra_spec as spec  # noqa: E402
+from drgkit import config
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "Saved", "Test")
+import umbra_spec as spec
+
+OUT = os.environ.get("DRG_TEST_OUT") or str(config.UE_SAVED / "Test" / "umbra")
 
 MESH = "/Script/Engine.StaticMeshComponent"
 SPOT = "/Script/Engine.SpotLightComponent"
@@ -407,14 +407,125 @@ def steps():
     return out
 
 
+def flag(value):
+    return {"equals": "True" if value else "False"}
+
+
+def num(value, tol=0.001):
+    return {"approx": value, "tol": tol}
+
+
+def expectations():
+    """What the TEST lines must say. drg test checks the LAST line with each prefix, so a value printed in
+    several steps is checked as the last step leaves it (see steps())."""
+    def level(name, index):
+        return spec.LEVELS[name][index]
+    gun_point, gun_spot = game_intensities("Scout", True, True)
+    medium = spec.DEFAULT_LEVEL
+    checks = [
+        # Watch: a reset spot and a new flare get the mod's light at once.
+        ("flareFSpot.AttenuationRadius", num(level("FlareRange", medium) * 100)),
+        ("flareFSpot.OuterConeAngle", num(spec.FLARE_OUTER_UPGRADED)),
+        ("flareFSpot.CastShadows", flag(False)),
+        ("flareFFill.CastShadows", flag(True)),
+        # Headlamps at the default level (myLamp is checked again with the mod off, below).
+        ("myLamp.SourceRadius", num(spec.LAMP_SOURCE_RADIUS)),
+        ("myWide.CastShadows", flag(False)),
+        ("myBody.CastShadow", flag(False)),
+        ("mateLamp.SourceRadius", num(spec.LAMP_SOURCE_RADIUS)),
+        # Default level: chosen flares shadow with their fill light; the spots do not.
+        ("flareBSpot.CastShadows", flag(False)),
+        ("flareBSpot.OuterConeAngle", num(spec.FLARE_OUTER_UPGRADED)),
+        ("flareBFill.LightFalloffExponent", num(spec.SHADOW_FALLOFF)),
+        ("flareBFill.ShadowResolutionScale", num(spec.SHADOW_RESOLUTION_SCALE)),
+        ("flareBFill.RelativeLocation", {"contains": "Z=%f" % spec.SHADOW_LIGHT_LIFT}),
+        ("gunB.LightIntensity_Point", num(gun_point)),
+        ("gunB.LightIntensity_Spot", num(gun_spot)),
+        ("flareAMesh.CastShadow", flag(False)),
+        ("terrainMesh.CastShadow", flag(True)),
+        # Fade: the slots empty and the Tick stops; the start levels are kept in IESBrightnessScale.
+        ("mod.PrimaryActorTick", {"contains": spec.TICK_GROUP}),
+        ("flareGFill.IESBrightnessScale", num(4.0)),
+        ("flareGSpot.IESBrightnessScale", num(4.0 * spec.HAND_SPOT_SHARE)),
+        ("gunCFill.IESBrightnessScale", num(spec.GUN_POINT_BASE)),
+        ("flareGFill.Intensity", num(0.0)),
+        ("flareGSpot.Intensity", num(0.0)),
+        ("gunCFill.Intensity", num(0.0)),
+        ("mod.Fading", flag(False)),
+        ("mod.FadeBusy", flag(False)),
+        ("mod.FadeFlare0", {"equals": "None"}),
+        ("mod.FadeFlare1", {"equals": "None"}),
+        ("mod.FadeFlare2", {"equals": "None"}),
+        # Settings page through the Mod Hub adapter.
+        ("page.Mod", {"contains": "InitCave_C"}),
+        # Low (last printed there): no team lamps, 2 hand flares at 10 m, no flare gun flare with shadows.
+        ("mateLamp.CastShadows", flag(level("TeamLamps", 0))),
+        ("flareBFill.AttenuationRadius", num(level("FlareRange", 0) * 100)),
+        ("flareDFill.AttenuationRadius", num(level("FlareRange", 0) * 100)),
+        ("gunBFill.AttenuationRadius", num(level("GunFlareRange", 0) * 100)),
+        # Ultra (last printed there): every flare shadows, also the fog.
+        ("settings.Enabled", flag(True)),
+        ("settings.SoftShadows", flag(level("SoftShadows", 3))),
+        ("settings.LightShafts", flag(level("LightShafts", 3))),
+        ("settings.ShadowDistance", num(level("ShadowDistance", 3))),
+        ("settings.FlareRange", num(level("FlareRange", 3))),
+        ("settings.GunFlareRange", num(level("GunFlareRange", 3))),
+        ("flareEFill.CastShadows", flag(True)),
+        ("flareDFill.bCastVolumetricShadow", flag(level("LightShafts", 3))),
+        ("gunBFill.CastShadows", flag(True)),
+        ("gunBFill.bCastVolumetricShadow", flag(level("LightShafts", 3))),
+        # Reset: the default level again.
+        ("valLevel.Text", {"contains": spec.LEVEL_NAMES[medium]}),
+        ("settings.Level", num(float(medium))),
+        ("settings.TeamLamps", flag(level("TeamLamps", medium))),
+        ("settings.HandFlares", num(level("HandFlares", medium))),
+        ("settings.GunFlares", num(level("GunFlares", medium))),
+        ("settings.Quality", num(0.0)),
+        # Enabled off: the game's own values come back.
+        ("cvar r.Shadow.FadeResolution", {"equals": str(spec.FADE_RES_GAME)}),
+        ("cvar r.Shadow.MinResolution", {"equals": str(spec.MIN_RES_GAME)}),
+        ("myLamp.CastShadows", flag(False)),
+        ("flareASpot.CastShadows", flag(True)),
+        ("flareASpot.SourceRadius", num(0.0)),
+        ("flareASpot.ShadowBias", num(spec.FLARE_BIAS_GAME)),
+        ("flareASpot.InnerConeAngle", num(spec.FLARE_INNER_GAME)),
+        ("flareASpot.OuterConeAngle", num(spec.FLARE_OUTER_GAME)),
+        ("flareAFill.AttenuationRadius", num(2000.0)),
+        ("flareAFill.CastShadows", flag(False)),
+        ("flareAFill.LightFalloffExponent", num(spec.FILL_FALLOFF_GAME)),
+        ("flareAFill.RelativeLocation", {"contains": "Z=%f" % spec.HAND_FILL_Z}),
+        ("flareAFill.LightColor", {"equals": "(B=255,G=160,R=160,A=255)"}),
+        ("flareA.BaseIntensity", num(4.0)),
+        ("gunA.LightIntensity_Point", num(spec.GUN_POINT_BASE)),
+        ("gunA.LightIntensity_Spot", num(spec.GUN_SPOT_BASE)),
+        ("flareCSpot.LightColor", {"equals": "(B=84,G=199,R=255,A=255)"}),
+        ("flareCFill.AttenuationRadius", num(2000.0)),
+        ("flareEFill.AttenuationRadius", num(2000.0)),
+        ("gunASpot.CastShadows", flag(True)),
+        ("gunASpot.ShadowBias", num(spec.GUN_BIAS_GAME)),
+        ("gunASpot.InnerConeAngle", num(spec.FLARE_INNER_GAME)),
+        ("gunASpot.OuterConeAngle", num(spec.FLARE_OUTER_GAME)),
+        ("gunASpot.RelativeRotation", {"contains": "Yaw=90.000000"}),
+        ("gunAFill.AttenuationRadius", num(3500.0)),
+        ("gunAFill.CastShadows", flag(False)),
+        # Space Rig: the mod is on, but the rig keeps the game's shadow filter.
+        ("cvar r.Shadow.FilterMethod", {"equals": "0"}),
+    ]
+    out = [dict(value, line="TEST %s = " % key) for key, value in checks]
+    out.append({"line": "TEST find %sUI/Umbra_Hub.Umbra_Hub_C -> " % MOD, "contains": "Umbra_Hub_C"})
+    return out
+
+
 def main():
+    if len(sys.argv) != 2:
+        sys.exit("usage: python umbra_test.py <out.json>")
     os.makedirs(OUT, exist_ok=True)
     assets = test_assets() + [{"kind": "worldtest", "steps": steps()}]
-    spec = os.path.join(ROOT, "Saved", "umbra_test.json")
-    with open(spec, "w", encoding="utf-8") as out:
+    with open(sys.argv[1], "w", encoding="utf-8") as out:
         json.dump({"assets": assets}, out, indent=1)
-    sys.exit(subprocess.call([sys.executable, os.path.join(ROOT, "Tools", "build_assets.py"), spec]))
-
+    with open(sys.argv[1] + ".expect.json", "w", encoding="utf-8") as out:
+        json.dump(expectations(), out, indent=1)
+    print("wrote %s (%d assets), captures in %s" % (sys.argv[1], len(assets), OUT))
 
 if __name__ == "__main__":
     main()
