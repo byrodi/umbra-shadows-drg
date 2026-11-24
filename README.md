@@ -39,13 +39,25 @@ Do not use it together with [Shadows!](https://mod.io/g/drg/m/shadows): that mod
 
 ## Settings
 
-All settings apply at once in a mission. Without Mod Hub the mod runs on Medium.
+You can change settings during a mission; every change shows right away. Without Mod Hub the mod runs on Medium.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Enabled | on | Off gives the lights back to the game. |
-| Shadow quality | Medium | Low gives the most FPS. See the table below. |
+| Shadow quality | Medium | Low gives the most FPS. See the table below. Custom keeps your own detailed settings. |
+
+Under them, "Detailed settings" opens a list in two groups:
+
+- Quality: every value a quality level sets (the table below). Changing one switches Shadow quality to Custom;
+  picking a level again sets the whole group to that level.
+- Look: Shadow quality never changes these.
+
+| Look setting | Default | What it does |
+| --- | --- | --- |
 | Class colour | 1 | 0 keeps the game's colours, 1 is the full class colour, up to 2 is brighter. |
+| Flare brightness | 1 | Flare light compared with the game. |
+| Shadow strength | 0.75 | Share of a shadow flare's light that casts shadows. Lower lifts the shadows. |
+| Penumbra size | 1 | Size of the headlamp light source. Bigger gives wider soft edges. |
 
 | | Low | Medium | High | Ultra |
 | --- | --- | --- | --- | --- |

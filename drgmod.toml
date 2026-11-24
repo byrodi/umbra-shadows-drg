@@ -1,7 +1,7 @@
 # Umbra Shadows: manifest for drg-toolkit (drg build umbra, drg test umbra, drg pack umbra ...).
 id = "umbra"
 name = "Umbra Shadows"          # shown in Mod Hub
-version = "0.3.0"               # the only place of the version; umbra_spec.py reads it
+version = "0.4.0"               # the only place of the version; umbra_spec.py reads it
 author = "rodionmasalov"
 folder = "_Umbra"               # /Game/_Umbra: never rename, players' settings depend on it
 prefix = "Umbra_"

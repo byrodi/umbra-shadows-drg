@@ -55,6 +55,9 @@ def box(name, loc, scale, mesh=CUBE):
 
 
 CLASSES = ["Driller", "Engineer", "Gunner", "Scout"]
+# Low (2 hand flares): does each burning hand flare cast? B and A are the nearest to the camera (flareX is nearer, but
+# out). Distances from the camera at (-40, 0, 170): B 1029, A 1451, D 2633, F 2970, C 3504, E 3636 cm.
+RANKED = {"flareA": True, "flareB": True, "flareC": False, "flareD": False, "flareE": False, "flareF": False}
 # The game's flare gun flare (PRJ_FlareGun_Projectile01).
 GUN_FILL = dict(bUseInverseSquaredFalloff="False", AttenuationRadius="3500.0", Intensity="3.5",
                 LightColor="(R=222,G=253,B=255,A=255)", CastShadows="False", CastStaticShadows="False",
@@ -95,8 +98,11 @@ def test_assets():
     assets += [
         {"kind": "blueprint", "transient": True, "path": TEST + "PRJ_TestFlareGun", "parent": "/Script/FSD.FlareGunProjectile",
          "variables": [{"name": "LightIntensity_Point", "type": "float", "default": "3.5"},
-                       {"name": "LightIntensity_Spot", "type": "float", "default": "35.0"}],
-         "components": flare_parts("PointLight_NoShadow", GUN_FILL, GUN_SPOT, GUN_SPOT_ROTATIONS)},
+                       {"name": "LightIntensity_Spot", "type": "float", "default": "50.0"}],
+         "components": flare_parts("PointLight_NoShadow", GUN_FILL, GUN_SPOT, GUN_SPOT_ROTATIONS) + [
+             # The game turns this off right after it hides the lights; the mod listens for that.
+             {"name": "ParticleSystem", "class": "/Script/Engine.ParticleSystemComponent",
+              "props": {"Template": "/Game/WeaponsNTools/FlareGun/P_FlareProjectile.P_FlareProjectile"}}]},
         # A dwarf: headlamp, wide fill, and a body mesh (behind the lamp, so it stays out of the pictures).
         {"kind": "blueprint", "transient": True, "path": TEST + "BP_TestDwarf", "parent": "/Script/Engine.Pawn",
          "components": [
@@ -119,6 +125,7 @@ def luminance(owner, amount):
 def defaults():
     out = {name: default for name, _, _, _, _, _, default in spec.SLIDERS}
     out.update({name: default for name, _, default in spec.LEVEL_SETTINGS})
+    out.update(dict(spec.LOOK_SETTINGS))
     return out
 
 
@@ -132,9 +139,8 @@ def game_intensities(owner, chosen, gun):
         lum = luminance(owner, d["FlareColour"])
         bright *= max(d["FlareColour"], 1.0)
     if gun:
-        point = spec.GUN_POINT_BASE * (bright / lum * (spec.GUN_TOTAL / spec.GUN_POINT_BASE * s if chosen else 1.0))
-        spot = spec.GUN_SPOT_BASE * (bright / lum * (spec.GUN_TOTAL / spec.GUN_SPOT_BASE * (1 - s) if chosen else 1.0))
-        return point, spot
+        # The flare gun's variables: what the game multiplies when the flare goes out (see spec.GUN_END_POINT).
+        return spec.GUN_POINT_BASE / spec.GUN_END_POINT, spec.GUN_SPOT_BASE / spec.GUN_END_SPOT
     base = 4.0 * bright / lum * (spec.HAND_TOTAL * s if chosen else 1.0)
     return base, base * spec.HAND_SPOT_SHARE
 
@@ -146,38 +152,47 @@ def animate(flares, guns, chosen):
         out.append({"props": name + "Fill", "values": {"Intensity": "%.3f" % fill}})
         for i in (1, 2, 3):
             out.append({"props": "%sSpot%d" % (name, i), "values": {"Intensity": "%.3f" % spot}})
-    for name in guns:
-        fill, spot = game_intensities("Scout", name in chosen, True)
+    for name in guns:  # the flare gun's lights keep the game's own intensities
+        fill, spot = spec.GUN_POINT_BASE, spec.GUN_SPOT_BASE
         out.append({"props": name + "Fill", "values": {"Intensity": "%.3f" % fill}})
         for i in (1, 2, 3):
             out.append({"props": "%sSpot%d" % (name, i), "values": {"Intensity": "%.3f" % spot}})
     return out
 
 
+def burning(name, on=True):
+    """The game sets IsFlareOn when a flare ignites and clears it when the light goes out (native code). The test
+    world runs no native flare logic, so the test sets it."""
+    return {"props": name, "values": {"IsFlareOn": "True" if on else "False"}}
+
+
 def fade_steps():
     """End of a flare's light: the mod fades it out itself (FadeLights, every frame).
 
     A hand flare with Duration 2 s is due at once (its light ends 2 s from now, the fade 1.8 s later). A flare gun
-    flare gets a light timeline at 86 of 90, playing at rate 1: due, its light goes out at 88 (2 s), the game hides
-    it 2 s later. Each capture ticks the world 0.8 s; the intensity must fall smoothly to 0, the slots must
-    empty and the Tick stop. Expected hand fill (template 4.0): 4 * (1 - t / 3.8)^3.
+    flare burns (Watch applies it, which binds its particle system), then goes out as in the game: IsFlareOn is
+    cleared, its lights are hidden and its ParticleSystem is turned off. The mod shows its lights again and fades
+    them out over GUN_TAIL. Each capture ticks the world 0.8 s; the intensity must fall smoothly to 0, the lights
+    end hidden, the slots must empty and the Tick stop. Expected hand fill (template 4.0): 4 * (1 - t / 3.8)^3.
     """
     out = [
         {"spawn": TEST + "ITM_TestFlare_Engineer.ITM_TestFlare_Engineer_C", "as": "flareG", "loc": [-2600, 1500, 30],
          "rot": [0, 90, 0]},
+        burning("flareG"),
         {"props": "flareG", "values": {"Duration": "2.0"}},
         {"comp": "flareG", "name": "Light_NoShadow", "as": "flareGFill"},
         {"comp": "flareG", "name": "SpotLight_Shadow_1", "as": "flareGSpot"},
         {"spawn": TEST + "PRJ_TestFlareGun.PRJ_TestFlareGun_C", "as": "gunC", "loc": [-1500, 2200, 500], "rot": [0, 90, 0]},
+        burning("gunC"),
         {"comp": "gunC", "name": "PointLight_NoShadow", "as": "gunCFill"},
-        {"addcomp": "gunC", "class": "/Script/Engine.TimelineComponent", "as": "gunCAnim"},
-        {"call": "gunCAnim.SetTimelineLengthMode", "args": {"NewLengthMode": "TL_TimelineLength"}},
-        {"call": "gunCAnim.SetTimelineLength", "args": {"NewLength": "90.0"}},
-        {"call": "gunCAnim.SetPlaybackPosition", "args": {"NewPosition": "86.0", "bFireEvents": "False", "bFireUpdate": "False"}},
-        {"call": "gunCAnim.SetPlayRate", "args": {"NewRate": "1.0"}},
-        {"call": "gunCAnim.Play"},
-        {"print": "gunCAnim", "fields": ["TheTimeline"]},
+        {"comp": "gunC", "name": "ParticleSystem", "as": "gunCParts"},
         {"call": "mod.Watch"},
+        {"print": "gunCParts", "fields": ["bIsActive"]},
+        # The game puts it out: the flag, the lights hidden, then the particle system off (the mod's hook).
+        burning("gunC", False),
+        {"call": "gunCFill.SetVisibility", "args": {"bNewVisibility": "False", "bPropagateToChildren": "False"}},
+        {"call": "gunCParts.Deactivate"},
+        {"print": "gunCFill", "fields": ["bVisible"]},  # shown again by the mod for its tail
         {"print": "mod", "fields": ["Fading", "FadeFlare0", "FadeStart0", "FadeEnd0", "FadeFlare1", "FadeStart1", "FadeEnd1",
                                     "FadeFlare2", "PrimaryActorTick"]},
         {"print": "flareGFill", "fields": ["IESBrightnessScale"]}, {"print": "flareGSpot", "fields": ["IESBrightnessScale"]},
@@ -193,6 +208,9 @@ def fade_steps():
                 {"print": "flareGFill", "fields": ["Intensity"]}, {"print": "flareGSpot", "fields": ["Intensity"]},
                 {"print": "gunCFill", "fields": ["Intensity"]}, {"print": "mod", "fields": ["Fading", "FadeBusy"]}]
     out.append({"print": "mod", "fields": ["Fading", "FadeFlare0", "FadeFlare1"]})
+    out.append({"print": "gunCFill", "fields": ["bVisible"]})  # hidden again after the tail
+    # Their light has ended: the game clears the flag. From here on the mod leaves them alone.
+    out += [burning("flareG", False)]
     return out
 
 
@@ -210,9 +228,11 @@ def steps():
         # Turned so the ring of the three spot lights faces the scene (a flare has two unlit ends).
         out.append({"spawn": TEST + "ITM_TestFlare_%s.ITM_TestFlare_%s_C" % (owner, owner), "as": name, "loc": loc,
                     "rot": [0, 90, 0]})
+        out.append(burning(name))
     guns = {"gunA": [1500, -900, 500], "gunB": [-1500, -2200, 500]}
     for name, loc in guns.items():
         out.append({"spawn": TEST + "PRJ_TestFlareGun.PRJ_TestFlareGun_C", "as": name, "loc": loc, "rot": [0, 90, 0]})
+        out.append(burning(name))
     scenery = ["floor", "wall", "pillar", "rock"]
 
     def scenery_shadows(on):
@@ -236,6 +256,7 @@ def steps():
         {"props": "flareASpot", "values": {"AttenuationRadius": "800.0"}},
         {"spawn": TEST + "ITM_TestFlare_Driller.ITM_TestFlare_Driller_C", "as": "flareF", "loc": [-2600, -1500, 30],
          "rot": [0, 90, 0]},
+        burning("flareF"),
         {"comp": "flareF", "name": "SpotLight_Shadow_1", "as": "flareFSpot"},
         {"print": "flareASpot", "fields": ["AttenuationRadius"]},
         {"print": "flareFSpot", "fields": ["AttenuationRadius", "LightColor"]},
@@ -355,8 +376,17 @@ def steps():
         {"print": "settings", "fields": SETTINGS_FIELDS},
         {"cvar": "r.Shadow.FilterMethod"}, {"cvar": "r.Shadow.MaxResolution"},
         {"cvar": "r.Shadow.FadeResolution"}, {"cvar": "r.Shadow.MinResolution"},
+        # A burnt-out flare, nearer to the camera than any other: it must not take a shadow, nor be touched.
+        {"spawn": TEST + "ITM_TestFlare_Gunner.ITM_TestFlare_Gunner_C", "as": "flareX", "loc": [300, 200, 30],
+         "rot": [0, 90, 0]},
+        burning("flareX", False),
+        {"comp": "flareX", "name": "Light_NoShadow", "as": "flareXFill"},
     ]
     out += camera(2)
+    # Low: the 2 nearest burning hand flares cast (B, then A), the other burning ones do not.
+    for name in RANKED:
+        out.append({"comp": name, "name": "Light_NoShadow", "as": "rank" + name})
+        out.append({"print": "rank" + name, "fields": ["CastShadows"]})
     out.append({"print": "mateLamp", "fields": ["CastShadows"]})
     out += flare_report(None, ["CastShadows", "AttenuationRadius"])
     out.append(dict(CAMERA, capture=os.path.join(OUT, "umbra_2_low.png")))
@@ -369,12 +399,47 @@ def steps():
     ]
     out += camera(4)
     out += flare_report(None, ["CastShadows", "bCastVolumetricShadow"])
+    out.append({"print": "flareX", "fields": ["BaseIntensity"]})  # Ultra raises it on burning flares only
     out.append(dict(CAMERA, capture=os.path.join(OUT, "umbra_3_ultra.png")))
+    # Custom: a detailed setting turns the level to Custom and keeps the player's values, also through ApplyLevel
+    # (run on load). The list of detailed settings is closed until it is opened.
+    out += [
+        {"get": "page.DetailRows", "as": "detailsShut"},
+        {"print": "detailsShut", "fields": ["Visibility"]},
+        {"call": "page.ToggleDetails"},
+        {"get": "page.DetailRows", "as": "detailsOpen"},
+        {"print": "detailsOpen", "fields": ["Visibility"]},
+        {"get": "page.SignDetails", "as": "signOpen"},
+        {"print": "signOpen", "fields": ["Text"]},
+        # A look setting keeps the level (Ultra).
+        {"call": "page.SldFlareColour_K2Node", "args": {"Value": "1.5"}},
+        {"get": "mod.Settings", "as": "look"},
+        {"print": "look", "fields": ["Level", "FlareColour"]},
+        {"call": "page.SldHandFlares_K2Node", "args": {"Value": "3.0"}},
+        {"call": "page.ChkTeamLamps_K2Node", "args": {"bIsChecked": "False"}},
+        {"call": "page.SldGunFlares_K2Node", "args": {"Value": "7.0"}},
+        {"call": "mod.ApplyLevel"},
+        {"call": "page.Sync"},
+        {"get": "mod.Settings", "as": "custom"},
+        {"print": "custom", "fields": ["Level", "HandFlares", "TeamLamps", "GunFlares", "LightShafts"]},
+        {"get": "page.ValLevel", "as": "valCustom"},
+        {"print": "valCustom", "fields": ["Text"]},
+        {"get": "page.ValGunFlares", "as": "valGun"},
+        {"print": "valGun", "fields": ["Text"]},
+        {"get": "page.ValHandFlares", "as": "valHand"},
+        {"print": "valHand", "fields": ["Text"]},
+        # Back from Custom to a level: its values again.
+        {"call": "page.SldLevel_K2Node", "args": {"Value": "2.0"}},
+        {"get": "mod.Settings", "as": "high"},
+        {"print": "high", "fields": ["Level", "HandFlares", "TeamLamps", "FlareColour"]},
+        {"get": "page.ValHandFlares", "as": "valHandHigh"},
+        {"print": "valHandHigh", "fields": ["Text"]},
+    ]
     # Reset: Medium again.
     out += [
-        {"call": "page.BtnReset_K2Node", "args": {}},
+        {"call": "page.ResetDefaults"},
         {"print": "valLevel", "fields": ["Text"]},
-        {"print": "settings", "fields": ["Level", "TeamLamps", "HandFlares", "GunFlares", "Quality"]},
+        {"print": "settings", "fields": ["Level", "TeamLamps", "HandFlares", "GunFlares", "Quality", "FlareColour"]},
     ]
 
     # Enabled off: the game's own state.
@@ -396,6 +461,8 @@ def steps():
         {"print": "gunASpot", "fields": ["CastShadows", "LightColor", "ShadowBias", "InnerConeAngle", "OuterConeAngle",
                                          "RelativeRotation"]},
         {"print": "gunAFill", "fields": ["AttenuationRadius", "LightColor", "CastShadows"]},
+        # The burnt-out flare kept the game's values through every level.
+        {"print": "flareXFill", "fields": ["AttenuationRadius", "CastShadows", "LightColor"]},
     ]
     # Space Rig after a mission: the mod is on with soft shadows, but the rig gets the game's filter (0).
     out += [
@@ -452,6 +519,8 @@ def expectations():
         ("flareGSpot.Intensity", num(0.0)),
         ("gunCFill.Intensity", num(0.0)),
         ("mod.Fading", flag(False)),
+        ("gunCParts.bIsActive", flag(True)),  # active while it burns, so turning it off is an event
+        ("gunCFill.bVisible", flag(False)),
         ("mod.FadeBusy", flag(False)),
         ("mod.FadeFlare0", {"equals": "None"}),
         ("mod.FadeFlare1", {"equals": "None"}),
@@ -474,6 +543,25 @@ def expectations():
         ("flareDFill.bCastVolumetricShadow", flag(level("LightShafts", 3))),
         ("gunBFill.CastShadows", flag(True)),
         ("gunBFill.bCastVolumetricShadow", flag(level("LightShafts", 3))),
+        # Custom (from Ultra): the hand-set values stay, the others keep Ultra's; the list opened.
+        ("detailsShut.Visibility", {"contains": "Collapsed"}),
+        ("detailsOpen.Visibility", {"contains": "Visible"}),
+        ("signOpen.Text", {"contains": "HIDE"}),
+        ("look.Level", num(3.0)),
+        ("look.FlareColour", num(1.5)),
+        ("custom.Level", num(float(spec.CUSTOM))),
+        ("custom.HandFlares", num(3.0)),
+        ("custom.TeamLamps", flag(False)),
+        ("custom.GunFlares", num(spec.ALL_FLARES)),
+        ("custom.LightShafts", flag(level("LightShafts", 3))),
+        ("valCustom.Text", {"contains": "Custom"}),
+        ("valGun.Text", {"contains": "All"}),
+        ("valHand.Text", {"contains": '"3"'}),
+        ("high.Level", num(2.0)),
+        ("high.HandFlares", num(level("HandFlares", 2))),
+        ("high.TeamLamps", flag(level("TeamLamps", 2))),
+        ("high.FlareColour", num(1.5)),
+        ("valHandHigh.Text", {"contains": '"%d"' % level("HandFlares", 2)}),
         # Reset: the default level again.
         ("valLevel.Text", {"contains": spec.LEVEL_NAMES[medium]}),
         ("settings.Level", num(float(medium))),
@@ -481,6 +569,7 @@ def expectations():
         ("settings.HandFlares", num(level("HandFlares", medium))),
         ("settings.GunFlares", num(level("GunFlares", medium))),
         ("settings.Quality", num(0.0)),
+        ("settings.FlareColour", num(1.0)),
         # Enabled off: the game's own values come back.
         ("cvar r.Shadow.FadeResolution", {"equals": str(spec.FADE_RES_GAME)}),
         ("cvar r.Shadow.MinResolution", {"equals": str(spec.MIN_RES_GAME)}),
@@ -497,7 +586,7 @@ def expectations():
         ("flareAFill.LightColor", {"equals": "(B=255,G=160,R=160,A=255)"}),
         ("flareA.BaseIntensity", num(4.0)),
         ("gunA.LightIntensity_Point", num(spec.GUN_POINT_BASE)),
-        ("gunA.LightIntensity_Spot", num(spec.GUN_SPOT_BASE)),
+        ("gunA.LightIntensity_Spot", num(spec.GUN_SPOT_VAR_GAME)),
         ("flareCSpot.LightColor", {"equals": "(B=84,G=199,R=255,A=255)"}),
         ("flareCFill.AttenuationRadius", num(2000.0)),
         ("flareEFill.AttenuationRadius", num(2000.0)),
@@ -510,7 +599,12 @@ def expectations():
         ("gunAFill.CastShadows", flag(False)),
         # Space Rig: the mod is on, but the rig keeps the game's shadow filter.
         ("cvar r.Shadow.FilterMethod", {"equals": "0"}),
-    ]
+        # A burnt-out flare is left alone at every level, and takes no shadow from a burning one.
+        ("flareX.BaseIntensity", num(4.0)),
+        ("flareXFill.AttenuationRadius", num(2000.0)),
+        ("flareXFill.CastShadows", flag(False)),
+        ("flareXFill.LightColor", {"equals": "(B=160,G=255,R=174,A=255)"}),
+    ] + [("rank%s.CastShadows" % name, flag(cast)) for name, cast in RANKED.items()]
     out = [dict(value, line="TEST %s = " % key) for key, value in checks]
     out.append({"line": "TEST find %sUI/Umbra_Hub.Umbra_Hub_C -> " % MOD, "contains": "Umbra_Hub_C"})
     return out

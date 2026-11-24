@@ -15,7 +15,7 @@ import math
 import sys
 
 from drgkit import mod as drgmod
-from drgkit.bp import dsl, modhub
+from drgkit.bp import dsl, modhub, ui
 from drgkit.bp.dsl import ref, t
 from drgkit.bp.modhub import iface
 
@@ -23,6 +23,7 @@ MOD = "/Game/_Umbra/"
 
 KSL = "/Script/Engine.KismetSystemLibrary"
 KML = "/Script/Engine.KismetMathLibrary"
+KARR = "/Script/Engine.KismetArrayLibrary"
 KSTR = "/Script/Engine.KismetStringLibrary"
 KTXT = "/Script/Engine.KismetTextLibrary"
 GS = "/Script/Engine.GameplayStatics"
@@ -38,6 +39,7 @@ SCENE = "/Script/Engine.SceneComponent"
 UMG = "/Script/UMG."
 LIGHT = "/Script/Engine.LightComponent"
 TIMELINE = "/Script/Engine.TimelineComponent"
+PARTICLES = "/Script/Engine.ParticleSystemComponent"
 FLARE = "/Script/FSD.Flare"
 GUN_FLARE = "/Script/FSD.FlareGunProjectile"
 PLAYER = "/Script/FSD.PlayerCharacter"
@@ -96,9 +98,11 @@ SHADOW_RESOLUTION_SCALE = 0.5  # half-size shadow maps: a quarter of the texels,
 SHADOW_BIAS, SHADOW_SLOPE_BIAS = 0.5, 0.5
 SHADOW_LIGHT_LIFT = 15.0     # cm above the flare
 PLACE_TOLERANCE = 1.0        # cm; the shadow light moves only when it is further off (see g_place_shadow_light)
-# Flare gun flare: 2.5 s after it is fired the game copies its lights' intensities into LightIntensity_Point and
-# LightIntensity_Spot (the game's values, not the mod's) and starts Light_Anim. While the timeline is below this
-# position (about 0.4 s at the game's play rate) Watch applies the mod's values again.
+MOVING_SPEED = 30.0          # cm/s; a flare faster than this (flying, rolling) gets its shadow light at its centre
+# Flare gun flare: its light timeline (Light_Anim) plays only when a cheat manager exists (PRJ_FlareGun_Projectile01,
+# ExecuteUbergraph 1059-1882), so not in a normal game: the lights keep their own intensities (GUN_POINT_BASE,
+# GUN_SPOT_BASE) while it burns. With a cheat manager the game copies those into LightIntensity_Point and
+# LightIntensity_Spot and plays the timeline; while it is below this position Watch applies the mod's values again.
 GUN_ANIM_FRESH = 0.5
 HAND_FILL_Z, GUN_FILL_X = 20.0, 3.23457  # where the game puts the fill light on the flare
 # Intensity variables of the game's flares (ITM_* BaseIntensity = the fill's template intensity per class;
@@ -107,14 +111,22 @@ HAND_BASE = {"Small_Engineer": 12.0, "Small_Driller": 5.0, "Flare_Small": 10.0, 
 HAND_SPOT_SHARE = 1.6        # hand flare: spots = 1.6 x fill
 HAND_TOTAL = 1.0 + HAND_SPOT_SHARE
 GUN_POINT_BASE, GUN_SPOT_BASE = 3.5, 35.0
-GUN_TOTAL = GUN_POINT_BASE + GUN_SPOT_BASE
+GUN_SPOT_VAR_GAME = 50.0     # the game's own LightIntensity_Spot (LightIntensity_Point is GUN_POINT_BASE)
+# When the flare goes out the game sets Light_Anim to 86 and so writes into the lights: point = LightIntensity_Point *
+# NewTrack_0(86), spots = LightIntensity_Spot * NewTrack_0(86) * ShadowMultiplier(86). Curve keys from the game
+# asset: NewTrack_0 (85.840, 0.42769) to (90, 0), cubic; ShadowMultiplier 1.005125 from 1.52 on. In game the point
+# light went to 12.302254 with the variable at 28.875 (2026-11-24). The mod sets the variables so that this write
+# repeats what the lights already have: the light does not jump when the flare goes out.
+GUN_END_POINT = 12.302254 / 28.875
+GUN_END_SPOT = GUN_END_POINT * 1.005125
 # Hue of each class: the colour the game gives the glowing flare model of that class
 # (M_Flare_Glow_<Class>_inst, DynamicTint2), scaled so the brightest channel is 1. Scout also covers the flare gun.
+# Engineer: the game's hue is pure red, which washed the scene red; the mod uses it 30% toward white.
 # Light colour = lerp(white, hue, Class colour): pastel at the default. The light of the game's flares has
 # other colours (Scout orange, Engineer and Driller blue, Gunner green); Class colour 0 keeps those.
 CLASS_HUE = {
     "Driller": "(R=1.0,G=0.855,B=0.0,A=1.0)",
-    "Engineer": "(R=1.0,G=0.0,B=0.0,A=1.0)",
+    "Engineer": "(R=1.0,G=0.3,B=0.3,A=1.0)",  # the game's pure red, 30% toward white (player feedback: too red)
     "Gunner": "(R=0.0,G=1.0,B=0.11,A=1.0)",
     "Scout": "(R=0.0,G=0.52,B=1.0,A=1.0)",
 }
@@ -130,20 +142,28 @@ TERRAIN_AT = 7               # first pass, after Mod Hub's own pass at 5 s
 FADE_SLOTS = 8               # flares that can fade at once; more keep the game's own ending
 HAND_FADE_LEAD = 4.0         # s before a hand flare's light ends (Duration after it is thrown)
 HAND_FADE_AFTER = 1.8        # s after it ends; the game hides the lights 2 s after the end
-GUN_FADE_FROM = 80.0         # flare gun: Light_Anim position (0 to 90) where the fade starts
-GUN_LIGHT_END, GUN_TIMELINE_END = 88.0, 90.0  # the flare goes out at 88; the game plays 88 to 90 at rate 1, then hides
-GUN_AFTER = 2.0              # s from 88 to 90 at play rate 1
-FADE_MARGIN = 0.15           # s; a gun flare's fade ends this much before the game hides its lights
+GUN_TIMELINE_END = 90.0      # length of the flare gun flare's light timeline (Light_Anim)
+# Flare gun flare: when it goes out the game sets its light timeline to 86 without playing it (the light jumps to
+# the track's value there) and hides the lights up to 4 s later, right before ParticleSystem.SetActive(false)
+# (PRJ_FlareGun_Projectile01, ExecuteUbergraph 131-267). The mod binds that component's OnComponentDeactivated
+# (BindGunEnd) and then shows the lights again for GUN_TAIL seconds while they fade (GunTail): no polling.
+# The jump at 86 changes nothing, see GUN_END_POINT, so the light is steady until the tail starts.
+GUN_TAIL = 3.0
 FADE_HOLD = 1.0              # s the mod keeps a faded light at zero, until the game has hidden it
 FADE_POWER = 3.0
 TICK_GROUP = "TG_PostUpdateWork"  # after actor, timeline, timer and subsystem ticks: the mod's value wins
 
-# Settings. The page shows only Enabled, the quality level and the class colour; the level writes all the
-# others (ApplyLevel, from LEVELS) whenever it changes and when the settings are loaded. So an old save with
-# hand-set values gets the level's values; the save slot and the variable names stay.
+# Settings. The page shows Enabled, the quality level and the class colour, and below them a list of detailed
+# settings that is closed until the player opens it. A level writes all the detailed settings (ApplyLevel, from
+# LEVELS) whenever it is chosen and when the settings are loaded. Changing a detailed setting by hand sets the
+# level to Custom (the slider's right end): ApplyLevel then keeps the player's values. So a save from 0.2.0 or
+# 0.3.0 (level 0 to 3) gets its level's values; the save slot and the variable names stay.
 LEVEL_NAMES = ["Low", "Medium", "High", "Ultra"]
+CUSTOM = len(LEVEL_NAMES)    # Level value of Custom
+PRESET_NAMES = LEVEL_NAMES + ["Custom"]
 DEFAULT_LEVEL = 1
 ALL_FLARES = 99.0            # "every flare" as a count
+CUT_ALL = 1.0e9              # cm; a distance cut that lets every flare cast (ApplyFlares)
 # Value of each setting at Low, Medium, High, Ultra.
 # OwnLamp, TeamLamps: headlamp shadows (own, other dwarves'). SoftShadows: PCSS penumbra (r.Shadow.FilterMethod).
 # TerrainShadows: cave walls cast shadows (Mod Hub hides them by default). LightShafts: shadow flares also shadow
@@ -151,7 +171,6 @@ ALL_FLARES = 99.0            # "every flare" as a count
 # FlareRange, GunFlareRange: metres the shadow light of a flare reaches. HandFlares, GunFlares: how many flares of
 # each kind, the nearest to the camera, cast shadows (the others light the same, without shadows).
 # Quality: shadow map size, 0 game setting, 1 = 1024, 2 = 2048, 3 = 4096.
-# FlareBrightness, ShadowStrength, Penumbra: fixed. Brightness and split of a flare's light, headlamp source size.
 LEVELS = {
     "OwnLamp": (True, True, True, True),
     "TeamLamps": (False, True, True, True),
@@ -166,9 +185,6 @@ LEVELS = {
     # The game's own shadow quality option sets the map size. A size set by the mod would stay until the game
     # restarts (nothing restores the console variable when the level goes down again), so no level sets one.
     "Quality": (0.0, 0.0, 0.0, 0.0),
-    "FlareBrightness": (1.0, 1.0, 1.0, 1.0),
-    "ShadowStrength": (0.75, 0.75, 0.75, 0.75),
-    "Penumbra": (1.0, 1.0, 1.0, 1.0),
 }
 # name, label, hint, default
 CHECKS = [
@@ -177,12 +193,66 @@ CHECKS = [
 # name, label, hint, min, max, step, default
 SLIDERS = [
     ("Level", "Shadow quality", "Low gives the most FPS. Higher levels add team headlamp shadows, soft edges, more and "
-              "longer flare shadows; Ultra also shadows the fog.", 0.0, float(len(LEVEL_NAMES) - 1), 1.0, float(DEFAULT_LEVEL)),
-    ("FlareColour", "Class colour", "Hand flares take the colour of the dwarf's class. 0 game colours, 1 full colour, up to 2 brighter colour. The flare gun keeps its own light.", 0.0, 2.0, 0.05, 1.0),
+              "longer flare shadows; Ultra also shadows the fog. Custom keeps your own detailed settings.",
+     0.0, float(CUSTOM), 1.0, float(DEFAULT_LEVEL)),
 ]
-# Kept in the save, set by the level, not on the page: (name, type, default = the default level's value).
+# Kept in the save, set by the level: (name, type, default = the default level's value).
 LEVEL_SETTINGS = [(name, "bool" if isinstance(values[0], bool) else "float", values[DEFAULT_LEVEL])
                   for name, values in LEVELS.items()]
+
+
+class Detail:
+    """A detailed setting on the page: a check box when low is None, else a slider. all_at: the slider's top stop
+    means every flare (ALL_FLARES is stored), shown as ALL. look: not part of a level (default given here); Shadow
+    quality never changes it, and changing it keeps the level."""
+
+    def __init__(self, name, label, hint, low=None, high=None, step=None, digits=0, all_at=None, look=False,
+                 default=None):
+        self.name, self.label, self.hint = name, label, hint
+        self.low, self.high, self.step, self.digits, self.all_at = low, high, step, digits, all_at
+        self.check = low is None
+        self.look = look
+        self.default = default if look else LEVELS[name][DEFAULT_LEVEL]
+
+
+# The list under DETAILED SETTINGS, in two groups. QUALITY: every level setting but Quality (a shadow map size set by
+# the mod would stay until the game restarts, see LEVELS); a change sets the level to Custom. LOOK: the colour and
+# brightness of flares, how dark the shadows are, the headlamp's soft edge.
+DETAILS = [
+    Detail("OwnLamp", "Own headlamp", "Your headlamp casts shadows."),
+    Detail("TeamLamps", "Team headlamps", "Other dwarves' headlamps cast shadows."),
+    Detail("SoftShadows", "Soft edges", "Shadow edges are sharp at the contact and softer with distance."),
+    Detail("TerrainShadows", "Cave wall shadows", "Cave walls cast shadows. Most shadows need it."),
+    Detail("LightShafts", "Shadows in fog", "Shadow flares also shadow the fog. Costs the most GPU time."),
+    Detail("ShadowDistance", "Shadow distance", "Metres. Flare shadows fade out beyond it. Lower gives more FPS.",
+           10.0, 60.0, 5.0),
+    Detail("HandFlares", "Hand flares", "How many hand flares cast shadows: the nearest to you. The others still light "
+           "the cave. Fewer gives more FPS in big fights.", 0.0, 11.0, 1.0, all_at=11.0),
+    Detail("FlareRange", "Hand flare range", "Metres. How far the shadow light of a hand flare reaches.",
+           8.0, 20.0, 1.0),
+    Detail("GunFlares", "Flare gun flares", "How many flare gun flares cast shadows: the nearest to you.",
+           0.0, 7.0, 1.0, all_at=7.0),
+    Detail("GunFlareRange", "Flare gun range", "Metres. How far the shadow light of a flare gun flare reaches.",
+           10.0, 30.0, 1.0),
+    Detail("FlareColour", "Class colour", "Hand flares take the colour of the dwarf's class. 0 game colours, 1 full "
+           "colour, up to 2 brighter colour. The flare gun keeps its own light.", 0.0, 2.0, 0.05, digits=2,
+           look=True, default=1.0),
+    Detail("FlareBrightness", "Flare brightness", "Flare light compared with the game. Coloured light is raised to the "
+           "same brightness.", 0.5, 2.0, 0.05, digits=2, look=True, default=1.0),
+    Detail("ShadowStrength", "Shadow strength", "Share of a shadow flare's light that casts shadows. Lower lifts the "
+           "shadows.", 0.4, 1.0, 0.05, digits=2, look=True, default=0.75),
+    Detail("Penumbra", "Penumbra size", "Size of the headlamp light source. Bigger gives wider soft edges.",
+           0.0, 3.0, 0.1, digits=1, look=True, default=1.0),
+]
+# Kept in the save, not part of a level: (name, default). All floats.
+LOOK_SETTINGS = [(d.name, d.default) for d in DETAILS if d.look]
+for _d in DETAILS:  # every level's value must fit its control
+    if _d.look:
+        assert _d.name not in LEVELS and _d.low <= _d.default <= _d.high, _d.name
+        continue
+    for _v in LEVELS[_d.name]:
+        assert _d.check == isinstance(_v, bool), _d.name
+        assert _d.check or _d.low <= _v <= _d.high or (_d.all_at is not None and _v >= ALL_FLARES), (_d.name, _v)
 
 
 class Graph(dsl.Graph):
@@ -198,6 +268,7 @@ def settings_asset():
     variables += [t(name, "float", default=str(default)) for name, _, _, _, _, _, default in SLIDERS]
     variables += [t(name, typ, default=str(default).lower() if typ == "bool" else str(default))
                   for name, typ, default in LEVEL_SETTINGS]
+    variables += [t(name, "float", default=str(default)) for name, default in LOOK_SETTINGS]
     return {"kind": "blueprint", "path": SETTINGS, "parent": "/Script/Engine.SaveGame", "variables": variables}
 
 
@@ -207,25 +278,29 @@ def g_load_settings():
     return modhub.g_load_settings(SETTINGS_C, SAVE_SLOT, then=[("level", "ApplyLevel")], check_exists=False)
 
 
-def level_index(g, prefix, level_pin):
-    """Output pins: is the level (a float, rounded and clamped) Low, Medium, High? Ultra is none of them."""
+def level_index(g, prefix, level_pin, names=LEVEL_NAMES):
+    """Output pins: is the level (a float, rounded and clamped to names) each of names but the last? The last name is
+    none of them. Also makes prefix + "Round" (the rounded level, not clamped)."""
     g.call(prefix + "Round", KML + ":Round", A=ref(level_pin))
-    g.call(prefix + "Int", KML + ":Clamp", Value=ref(prefix + "Round.ReturnValue"), Min="0", Max=str(len(LEVEL_NAMES) - 1))
+    g.call(prefix + "Int", KML + ":Clamp", Value=ref(prefix + "Round.ReturnValue"), Min="0", Max=str(len(names) - 1))
     level = prefix + "Int.ReturnValue"
     picks = []
-    for i in range(len(LEVEL_NAMES) - 1):
+    for i in range(len(names) - 1):
         g.call("%sIs%d" % (prefix, i), KML + ":EqualEqual_IntInt", A=ref(level), B=str(i))
         picks.append("%sIs%d.ReturnValue" % (prefix, i))
     return level, picks
 
 
 def g_apply_level():
-    """Writes the settings of the chosen level (LEVELS) into Settings. Does not apply them (ApplySettings does)."""
+    """Writes the settings of the chosen level (LEVELS) into Settings. Does not apply them (ApplySettings does).
+    Custom (or above): writes nothing, the player's own values stay."""
     g = Graph()
     settings = g.get("getSettings", "Settings")
     g.call("valid", KSL + ":IsValid", Object=ref(settings))
-    g.branch("br", "valid.ReturnValue")
     level, picks = level_index(g, "lv", g.get("getLevel", "Level", SETTINGS_C, settings))
+    g.call("isPreset", KML + ":Less_IntInt", A=ref("lvRound.ReturnValue"), B=str(CUSTOM))
+    g.call("doWrite", KML + ":BooleanAND", A=ref("valid.ReturnValue"), B=ref("isPreset.ReturnValue"))
+    g.branch("br", "doWrite.ReturnValue")
     chain = ["entry", "br"]
     for name, values in LEVELS.items():
         if isinstance(values[0], bool):
@@ -429,17 +504,42 @@ def g_apply_pawn():
     return g.data()
 
 
-def g_apply_flares():
-    """Every flare of one kind gets the mod's light; only the Count flares nearest to the camera cast shadows.
+def g_is_lit():
+    """Is this flare burning? The game's own flag, IsFlareOn (replicated, so clients have it too): set when the
+    flare ignites, cleared when it goes out. A hand flare's light ends then; a flare gun flare keeps a last light
+    for up to 4 s and then hides its lights (see GUN_TAIL). A burnt-out flare stays in the level
+    until the mission ends, so a long mission holds hundreds of them, and none needs the mod. Any other actor
+    counts as burning."""
+    g = Graph()
+    hand = g.cast("asHand", FLARE, "entry.Flare")
+    g.set("handOn", "LitNow", value=g.get("handFlag", "IsFlareOn", FLARE, hand))
+    gun = g.cast("asGun", GUN_FLARE, "entry.Flare")
+    g.set("gunOn", "LitNow", value=g.get("gunFlag", "IsFlareOn", GUN_FLARE, gun))
+    g.set("other", "LitNow", default="true")
+    g.link(g.get("getLit", "LitNow"), "result.bLit")
+    g.flow("entry", "asHand", "handOn", "result")
+    g.flow("asHand.CastFailed", "asGun", "gunOn", "result")
+    g.flow("asGun.CastFailed", "other", "result")
+    return g.data()
 
-    A flare's rank is the number of flares of its kind closer to the camera, so each flare is compared with
-    each (a few dozen at most, once a second). Count ALL_FLARES or more, or no camera: every flare casts.
+
+def g_apply_flares():
+    """Every burning flare of one kind gets the mod's light; only the Count flares nearest to the camera cast shadows.
+
+    Burnt-out flares are skipped (IsLit): they also take no shadow from a burning one. The distances of the burning
+    flares go into Dists; the cut is the Count-th smallest of them (Count passes of a minimum search over a copy,
+    about Count x N steps), and a flare casts when its distance is at most the cut. That is the same choice as
+    "fewer than Count flares are closer", without comparing each flare with each other one: a long mission has
+    hundreds of flares, and that comparison cost 15 to 20 ms once a second at 200 flares (2026-11-23 capture).
+    Count ALL_FLARES or more, no camera, or no more burning flares than Count: every one casts. Count 0: none.
     Each shadow light costs a shadow map that every moving thing in its reach (bugs) is drawn into each frame,
     so in a fight the count, not the distance fade (ApplyShadowFade), is what keeps the cost down.
     """
     g = Graph()
     g.call("all", GS + ":GetAllActorsOfClass", ActorClass=ref("entry.FlareClass"))
     g.set("keep", "Actors", value="all.OutActors")
+    g.call("clearLit", KARR + ":Array_Clear", TargetArray=ref(g.get("lit0", "Lit")))
+    g.call("clearDists", KARR + ":Array_Clear", TargetArray=ref(g.get("dists0", "Dists")))
     g.call("cam", GS + ":GetPlayerCameraManager", PlayerIndex="0")
     g.call("camValid", KSL + ":IsValid", Object=ref("cam.ReturnValue"))
     g.branch("brCam", "camValid.ReturnValue")
@@ -449,34 +549,57 @@ def g_apply_flares():
     g.call("countAll", KML + ":GreaterEqual_FloatFloat", A=ref("entry.Count"), B=str(ALL_FLARES))
     g.call("castAll", KML + ":BooleanOR", A=ref("noCam.ReturnValue"), B=ref("countAll.ReturnValue"))
     g.set("keepAll", "CastAll", value="castAll.ReturnValue")
-    g.flow("entry", "all", "keep", "keepAll", "brCam", "setCam", "each.Exec")
+    g.flow("entry", "all", "keep", "clearLit", "clearDists", "keepAll", "brCam", "setCam", "each.Exec")
     g.flow("brCam.else", "each.Exec")
 
+    # 1. The burning flares, and their distances to the camera in the same order.
     flare = g.loop("each", g.get("getActors", "Actors"))
-    g.branch("brAll", g.get("getAll", "CastAll"))
+    g.call("lit", "IsLit", Flare=ref(flare))
+    g.branch("brLit", "lit.bLit")
+    g.call("addLit", KARR + ":Array_Add", TargetArray=ref(g.get("lit1", "Lit")), NewItem=ref(flare))
     g.call("dist", KML + ":VSize", A=ref(g.call("off", KML + ":Subtract_VectorVector", B=ref(g.get("getCam", "CamAt")),
                                                  A=ref(g.call("at", ACTOR + ":K2_GetActorLocation", target=ref(flare)) + ".ReturnValue"))
                                           + ".ReturnValue"))
-    g.set("setDist", "FlareDist", value="dist.ReturnValue")
-    g.set("rank0", "Rank", default="0")
-    other = g.loop("eachOther", g.get("getOthers", "Actors"))
-    g.call("otherDist", KML + ":VSize", A=ref(g.call("otherOff", KML + ":Subtract_VectorVector", B=ref(g.get("getCam2", "CamAt")),
-                                                      A=ref(g.call("otherAt", ACTOR + ":K2_GetActorLocation", target=ref(other)) + ".ReturnValue"))
-                                               + ".ReturnValue"))
-    g.call("closer", KML + ":Less_FloatFloat", A=ref("otherDist.ReturnValue"), B=ref(g.get("getDist", "FlareDist")))
-    g.branch("brCloser", "closer.ReturnValue")
-    g.set("rankUp", "Rank", value=g.call("rankAdd", KML + ":Add_IntInt", A=ref(g.get("getRank", "Rank")), B="1") + ".ReturnValue")
-    g.flow("each.LoopBody", "brAll")
-    g.flow("brAll.else", "setDist", "rank0", "eachOther.Exec")
-    g.flow("eachOther.LoopBody", "brCloser", "rankUp")
+    g.call("addDist", KARR + ":Array_Add", TargetArray=ref(g.get("dists1", "Dists")), NewItem=ref("dist.ReturnValue"))
+    g.flow("each.LoopBody", "lit", "brLit", "addLit", "addDist")
 
-    g.call("rankF", KML + ":Conv_IntToFloat", InInt=ref(g.get("getRank2", "Rank")))
-    g.call("near", KML + ":Less_FloatFloat", A=ref("rankF.ReturnValue"), B=ref("entry.Count"))
-    g.call("cast", KML + ":BooleanOR", A=ref(g.get("getAll2", "CastAll")), B=ref("near.ReturnValue"))
-    g.call("apply", "ApplyFlare", Flare=ref(flare), bUpgrade=ref(g.setting("Enabled")), bCast=ref("cast.ReturnValue"),
+    # 2. The cut: the Count-th smallest distance. Count is a whole number kept as a float (2, 4, 6).
+    g.call("k", KML + ":FCeil", A=ref("entry.Count"))
+    g.call("nLit", KARR + ":Array_Length", TargetArray=ref(g.get("lit2", "Lit")))
+    g.call("more", KML + ":Greater_IntInt", A=ref("nLit.ReturnValue"), B=ref("k.ReturnValue"))
+    g.call("notAll", KML + ":Not_PreBool", A=ref(g.get("getAll", "CastAll")))
+    g.call("needCut", KML + ":BooleanAND", A=ref("notAll.ReturnValue"), B=ref("more.ReturnValue"))
+    g.branch("brCut", "needCut.ReturnValue")
+    g.set("cutAll", "Cut", default=str(CUT_ALL))
+    g.set("copy", "Nearest", value=g.get("dists2", "Dists"))
+    g.set("cutNone", "Cut", default="-1.0")  # Count 0: the passes below do not run, and no flare casts
+    g.for_range("pass", "1", ref("k.ReturnValue"))
+    g.set("minAt0", "MinAt", default="0")
+    g.set("minDist0", "MinDist", value=g.call("first", KARR + ":Array_Get", TargetArray=ref(g.get("nearest0", "Nearest")),
+                                              Index="0") + ".Item")
+    near = g.loop("eachNear", g.get("nearest1", "Nearest"))
+    g.call("smaller", KML + ":Less_FloatFloat", A=ref(near), B=ref(g.get("getMin", "MinDist")))
+    g.branch("brSmaller", "smaller.ReturnValue")
+    g.set("setMinDist", "MinDist", value=near)
+    g.set("setMinAt", "MinAt", value="eachNear.Array Index")
+    g.set("setCut", "Cut", value=g.get("getMin2", "MinDist"))
+    g.call("drop", KARR + ":Array_Remove", TargetArray=ref(g.get("nearest2", "Nearest")),
+           IndexToRemove=ref(g.get("getMinAt", "MinAt")))
+    g.flow("each.Completed", "brCut", "copy", "cutNone", "pass.execute")
+    g.flow("pass.LoopBody", "minAt0", "minDist0", "eachNear.Exec")
+    g.flow("eachNear.LoopBody", "brSmaller", "setMinDist", "setMinAt")
+    g.flow("eachNear.Completed", "setCut", "drop")
+    g.flow("brCut.else", "cutAll", "eachLit.Exec")
+    g.flow("pass.Completed", "eachLit.Exec")
+
+    # 3. The light of each burning flare.
+    lit_flare = g.loop("eachLit", g.get("lit3", "Lit"))
+    g.call("itsDist", KARR + ":Array_Get", TargetArray=ref(g.get("dists3", "Dists")), Index=ref("eachLit.Array Index"))
+    g.call("inCut", KML + ":LessEqual_FloatFloat", A=ref("itsDist.Item"), B=ref(g.get("getCut", "Cut")))
+    g.call("apply", "ApplyFlare", Flare=ref(lit_flare), bUpgrade=ref(g.setting("Enabled")), bCast=ref("inCut.ReturnValue"),
            Range=ref("entry.Range"))
-    g.flow("brAll", "apply")
-    g.flow("eachOther.Completed", "apply")
+    g.call("bindEnd", "BindGunEnd", Flare=ref(lit_flare))
+    g.flow("eachLit.LoopBody", "apply", "bindEnd")
     return g.data()
 
 
@@ -490,7 +613,7 @@ def gun_spot_tilted(pitch, yaw):
 
 def g_watch():
     """Runs ten times a second: new flares, and flares the game has just reset, get the mod's light at once.
-    Flares whose light is about to end start their fade-out."""
+    Hand flares whose light is about to end start their fade-out (flare gun flares: GunTail, from an event)."""
     g = Graph()
     g.call("on", KML + ":BooleanAND", A=ref(g.get("getActive", "ActiveInLevel")), B=ref(g.setting("Enabled")))
     g.branch("br", "on.ReturnValue")
@@ -499,8 +622,7 @@ def g_watch():
     g.call("gun", "WatchFlares", FlareClass=GUN_FLARE, Range=ref(g.setting("GunFlareRange")),
            Count=ref(g.setting("GunFlares")), bGun="true")
     g.call("fadeHand", "StartFades", FlareClass=FLARE, bGun="false")
-    g.call("fadeGun", "StartFades", FlareClass=GUN_FLARE, bGun="true")
-    g.flow("entry", "br", "hand", "gun", "fadeHand", "fadeGun")
+    g.flow("entry", "br", "hand", "gun", "fadeHand")
     # Mod off: the game drives the lights of fading flares again.
     g.branch("brFading", g.get("getFading", "Fading"))
     g.call("stop", "StopFades")
@@ -517,17 +639,31 @@ def is_mod_light(g, node_id, light):
 
 
 def g_start_fades():
-    """Flares of one kind whose light is about to end get a fade slot. Each of the mod's lights keeps its present
-    level, the start of its fade, in IESBrightnessScale: a property used only with an IES light profile (flare
-    lights have none)."""
+    """Hand flares whose light is about to end get a fade slot. Each of the mod's lights keeps its present level, the
+    start of its fade, in IESBrightnessScale: a property used only with an IES light profile (flare lights have
+    none). Burnt-out flares are skipped (IsLit): a hand flare's fade starts while it still burns.
+    Flare gun flares do not come here: GunTail fades them from an event."""
     g = Graph()
     g.call("all", GS + ":GetAllActorsOfClass", ActorClass=ref("entry.FlareClass"))
     g.set("keep", "FadeActors", value="all.OutActors")
     flare = g.loop("each", g.get("getActors", "FadeActors"))
+    g.call("lit", "IsLit", Flare=ref(flare))
+    g.branch("brLit", "lit.bLit")
     g.call("due", "FlareDue", Flare=ref(flare), bGun=ref("entry.bGun"))
     g.branch("brDue", g.get("getDue", "DueNow"))
     g.call("known", "IsFading", Flare=ref(flare))
     g.branch("brKnown", "known.bFading")
+    add_fade_here(g, flare, g.get("getEnd", "DueEnd"))
+    g.flow("entry", "all", "keep", "each.Exec")
+    g.flow("each.LoopBody", "lit", "brLit", "due", "brDue", "known")
+    g.flow("known", "brKnown")
+    g.flow("brKnown.else", "keepLights", "eachLight.Exec")
+    return g.data()
+
+
+def add_fade_here(g, flare, end_pin, show=False):
+    """Nodes that store the level of each of the mod's lights of a flare and give the flare a fade slot ending at
+    end_pin. Exec in: "keepLights"; out: "add". show: the lights are made visible again first (GunTail)."""
     g.call("lights", ACTOR + ":K2_GetComponentsByClass", ComponentClass=POINT, target=ref(flare))
     g.set("keepLights", "FadePoints", value="lights.ReturnValue")
     light = g.loop("eachLight", g.get("getLights", "FadePoints"))
@@ -535,58 +671,22 @@ def g_start_fades():
     g.call("store", KSL + ":SetFloatPropertyByName", Object=ref(light), PropertyName="IESBrightnessScale",
            Value=ref(g.get("level", "Intensity", LIGHT_BASE, light)))
     g.call("now", GS + ":GetTimeSeconds")
-    g.call("add", "AddFade", Flare=ref(flare), Start=ref("now.ReturnValue"), End=ref(g.get("getEnd", "DueEnd")))
-    g.flow("entry", "all", "keep", "each.Exec")
-    g.flow("each.LoopBody", "due", "brDue", "known")
-    g.flow("known", "brKnown")
-    g.flow("brKnown.else", "keepLights", "eachLight.Exec")
-    g.flow("eachLight.LoopBody", "brMine", "store")
+    g.call("add", "AddFade", Flare=ref(flare), Start=ref("now.ReturnValue"), End=ref(end_pin))
+    if show:
+        g.call("show", SCENE + ":SetVisibility", target=ref(light), bNewVisibility="true", bPropagateToChildren="false")
+        g.flow("eachLight.LoopBody", "brMine", "show", "store")
+    else:
+        g.flow("eachLight.LoopBody", "brMine", "store")
     g.flow("eachLight.Completed", "add")
-    return g.data()
 
 
 def g_flare_due():
-    """Is the light of this flare about to end? Sets DueNow, and DueEnd: the game time the fade reaches zero.
-
-    Hand flare: its light runs for Duration from the throw (native code), so the fade starts HAND_FADE_LEAD
-    before that and ends HAND_FADE_AFTER after it. Flare gun flare: read from its light timeline, whose
-    play rate is 88 / Duration until the flare goes out at 88, and 1 for the last stretch to 90.
-    """
+    """Is the light of this hand flare about to end? Sets DueNow, and DueEnd: the game time the fade reaches zero.
+    Its light runs for Duration from the throw (native code), so the fade starts HAND_FADE_LEAD before that and
+    ends HAND_FADE_AFTER after it. bGun: unused (flare gun flares fade from an event, see GunTail)."""
     g = Graph()
     g.set("clear", "DueNow", default="false")
-    g.branch("brKind", "entry.bGun")
-    g.flow("entry", "clear", "brKind")
     g.call("now", GS + ":GetTimeSeconds")
-
-    # --- flare gun flare
-    g.call("timelines", ACTOR + ":K2_GetComponentsByClass", ComponentClass=TIMELINE, target=ref("entry.Flare"))
-    g.set("keep", "Timelines", value="timelines.ReturnValue")
-    timeline = g.loop("each", g.get("getTimelines", "Timelines"))
-    g.call("pos", TIMELINE + ":GetPlaybackPosition", target=ref(timeline))
-    g.call("rate", KML + ":FMax", A=ref(g.call("rateNow", TIMELINE + ":GetPlayRate", target=ref(timeline)) + ".ReturnValue"), B="0.1")
-    g.call("playing", TIMELINE + ":IsPlaying", target=ref(timeline))
-    g.call("length", TIMELINE + ":GetTimelineLength", target=ref(timeline))
-    g.call("late", KML + ":GreaterEqual_FloatFloat", A=ref("pos.ReturnValue"), B=str(GUN_FADE_FROM))
-    g.call("isLight", KML + ":GreaterEqual_FloatFloat", A=ref("length.ReturnValue"), B=str(GUN_TIMELINE_END - 1.0))
-    g.call("gunOk1", KML + ":BooleanAND", A=ref("playing.ReturnValue"), B=ref("late.ReturnValue"))
-    g.call("gunOk", KML + ":BooleanAND", A=ref("gunOk1.ReturnValue"), B=ref("isLight.ReturnValue"))
-    g.branch("brGun", "gunOk.ReturnValue")
-    # Still burning: to 88 at this rate, then 2 s at rate 1. Already out: to 90 at this rate.
-    g.call("toOut", KML + ":Divide_FloatFloat", B=ref("rate.ReturnValue"),
-           A=ref(g.call("toOutPos", KML + ":Subtract_FloatFloat", A=str(GUN_LIGHT_END), B=ref("pos.ReturnValue")) + ".ReturnValue"))
-    g.call("burning", KML + ":Add_FloatFloat", A=ref("toOut.ReturnValue"), B=str(GUN_AFTER))
-    g.call("toHide", KML + ":Divide_FloatFloat", B=ref("rate.ReturnValue"),
-           A=ref(g.call("toHidePos", KML + ":Subtract_FloatFloat", A=str(GUN_TIMELINE_END), B=ref("pos.ReturnValue")) + ".ReturnValue"))
-    g.call("isBurning", KML + ":Less_FloatFloat", A=ref("pos.ReturnValue"), B=str(GUN_LIGHT_END))
-    g.call("left", KML + ":SelectFloat", A=ref("burning.ReturnValue"), B=ref("toHide.ReturnValue"), bPickA=ref("isBurning.ReturnValue"))
-    g.call("gunEnd1", KML + ":Add_FloatFloat", A=ref("now.ReturnValue"), B=ref("left.ReturnValue"))
-    g.call("gunEnd", KML + ":Subtract_FloatFloat", A=ref("gunEnd1.ReturnValue"), B=str(FADE_MARGIN))
-    g.set("gunSetEnd", "DueEnd", value="gunEnd.ReturnValue")
-    g.set("gunDue", "DueNow", default="true")
-    g.flow("brKind", "keep", "each.Exec")
-    g.flow("each.LoopBody", "brGun", "gunSetEnd", "gunDue")
-
-    # --- hand flare
     g.node("asFlare", "cast", **{"class": FLARE})
     g.link("entry.Flare", "asFlare.Object")
     g.call("age", ACTOR + ":GetGameTimeSinceCreation", target=ref("entry.Flare"))
@@ -601,7 +701,45 @@ def g_flare_due():
     g.call("handEnd", KML + ":Add_FloatFloat", A=ref("handEnd1.ReturnValue"), B=str(HAND_FADE_AFTER))
     g.set("handSetEnd", "DueEnd", value="handEnd.ReturnValue")
     g.set("handDue", "DueNow", default="true")
-    g.flow("brKind.else", "asFlare", "brHand", "handSetEnd", "handDue")
+    g.flow("entry", "clear", "asFlare", "brHand", "handSetEnd", "handDue")
+    return g.data()
+
+
+def g_bind_gun_end():
+    """BindGunEnd: a burning flare gun flare reports when the game hides its lights. Its particle systems'
+    OnComponentDeactivated goes to GunFlareOut (the game turns ParticleSystem off right after it hides the lights).
+    Called from ApplyFlares; a bind that is already there is not added again (AddUnique). Hand flares: nothing."""
+    g = Graph()
+    g.cast("asGun", GUN_FLARE, "entry.Flare")
+    g.call("parts", ACTOR + ":K2_GetComponentsByClass", ComponentClass=PARTICLES, target=ref("entry.Flare"))
+    g.set("keepParts", "Parts", value="parts.ReturnValue")
+    part = g.loop("eachPart", g.get("getParts", "Parts"))
+    g.node("handler", "createdelegate", fn="GunFlareOut")
+    g.node("bind", "adddelegate", name="OnComponentDeactivated", **{"class": "/Script/Engine.ActorComponent"})
+    g.link(part, "bind.self")
+    g.link("handler.OutputDelegate", "bind.Delegate")
+    g.flow("entry", "asGun", "keepParts", "eachPart.Exec")
+    g.flow("eachPart.LoopBody", "bind")
+    return g.data()
+
+
+def g_gun_tail():
+    """GunTail: the game has just hidden the lights of a flare gun flare (Component is its particle system). With
+    the mod on, the mod's lights are shown again and faded out over GUN_TAIL seconds from the level they had;
+    FadeLights hides them again at the end. Ignored while the flare still burns (another particle system went off)."""
+    g = Graph()
+    g.call("on", KML + ":BooleanAND", A=ref(g.get("getActive", "ActiveInLevel")), B=ref(g.setting("Enabled")))
+    g.branch("brOn", "on.ReturnValue")
+    g.call("owner", "/Script/Engine.ActorComponent:GetOwner", target=ref("entry.Component"))
+    gun = g.cast("asGun", GUN_FLARE, "owner.ReturnValue")
+    g.call("out", KML + ":Not_PreBool", A=ref(g.get("flag", "IsFlareOn", GUN_FLARE, gun)))
+    g.branch("brOut", "out.ReturnValue")
+    g.call("known", "IsFading", Flare=ref("owner.ReturnValue"))
+    g.branch("brKnown", "known.bFading")
+    g.call("tailEnd", KML + ":Add_FloatFloat", A=ref(g.call("nowEnd", GS + ":GetTimeSeconds") + ".ReturnValue"), B=str(GUN_TAIL))
+    add_fade_here(g, "owner.ReturnValue", "tailEnd.ReturnValue", show=True)
+    g.flow("entry", "brOn", "asGun", "brOut", "known", "brKnown")
+    g.flow("brKnown.else", "keepLights", "eachLight.Exec")
     return g.data()
 
 
@@ -647,7 +785,8 @@ def g_add_fade():
 def g_fade_lights():
     """Every frame while flares fade (Tick, after the game's own light update). Each of the mod's lights of a
     fading flare: intensity = its level at the start of the fade (IESBrightnessScale) * (1 - u)^3, u going from
-    0 to 1 between FadeStart and FadeEnd. After the fade the lights are kept at zero for FADE_HOLD, then the slot
+    0 to 1 between FadeStart and FadeEnd. After the fade the lights are kept at zero for FADE_HOLD, then they are
+    hidden (the game has hidden a hand flare's already; GunTail showed a flare gun flare's again) and the slot
     is freed. No slot in use: the Tick stops."""
     g = Graph()
     g.call("on", KML + ":BooleanAND", A=ref(g.get("getActive", "ActiveInLevel")), B=ref(g.setting("Enabled")))
@@ -690,7 +829,10 @@ def g_fade_lights():
         for out_pin in exits:
             g.link(out_pin, slot("br", i) + ".execute")
         g.flow(slot("br", i), slot("keepK", i), slot("keepLights", i), slot("each", i) + ".Exec")
-        g.flow(slot("each", i) + ".LoopBody", slot("brMine", i), slot("set", i))
+        g.branch(slot("brHide", i), slot("over", i) + ".ReturnValue")
+        g.call(slot("hide", i), SCENE + ":SetVisibility", target=ref(light), bNewVisibility="false",
+               bPropagateToChildren="false")
+        g.flow(slot("each", i) + ".LoopBody", slot("brMine", i), slot("set", i), slot("brHide", i), slot("hide", i))
         g.flow(slot("each", i) + ".Completed", slot("brOver", i), slot("free", i))
         g.flow(slot("brOver", i) + ".else", slot("busy", i))
         exits = [slot("br", i) + ".else", slot("free", i) + ".then", slot("busy", i) + ".then"]
@@ -715,7 +857,7 @@ def g_stop_fades():
 
 
 def g_watch_flares():
-    """Cheap check of one kind of flare, ten times a second.
+    """Cheap check of one kind of flare, ten times a second. Burnt-out flares are skipped (IsLit).
 
     With the mod on, the fill and the spot lights of every flare reach Range. One that does not belongs to a
     new flare, or the game has just set it (it does when a flare ignites or lands), so the whole kind is
@@ -746,8 +888,10 @@ def g_watch_flares():
            A=ref(g.get("stored", "IndirectLightingIntensity", LIGHT_BASE, light)))
     g.branch("brShadow", "isShadow.ReturnValue")
     g.call("place", "PlaceShadowLight", Flare=ref(flare), Light=ref(light))
+    g.call("lit", "IsLit", Flare=ref(flare))
+    g.branch("brLit", "lit.bLit")
     g.flow("entry", "clear", "all", "keep", "each.Exec")
-    g.flow("each.LoopBody", "keepLights", "eachLight.Exec")
+    g.flow("each.LoopBody", "lit", "brLit", "keepLights", "eachLight.Exec")
     g.flow("eachLight.LoopBody", "brOff", "mark", "brShadow", "place")
     g.flow("brOff.else", "brShadow")
 
@@ -779,9 +923,12 @@ def g_place_shadow_light():
 
     That part is the light's parent: the hand flare's box (its root), or the box of the flare gun's dart (its
     shaft, 30 cm behind the tip that sticks in the wall; the actor's own place is that tip). The light's own
-    place on the flare may be in the floor or the wall. The lift is kept relative to the flare, so it turns
-    while the flare flies or rolls; Watch puts it back ten times a second. The light moves only when it is
-    more than PLACE_TOLERANCE off: a light that moves renders its shadow map again instead of the cached one.
+    place on the flare may be in the floor or the wall. The lift is kept relative to the flare, so it would turn
+    with a tumbling flare between two Watch calls and the shadows would jump (in game: lift -13 to +15 cm at
+    4 samples a second, 2026-11-24). So while the flare moves faster than MOVING_SPEED the light sits at the
+    centre of that part, where turning does not move it, and gets its lift once the flare is at rest.
+    The light moves only when it is more than PLACE_TOLERANCE off: a light that moves renders its shadow map
+    again instead of the cached one.
     A light that is the flare's root is never moved: that would move the flare.
     """
     g = Graph()
@@ -796,7 +943,11 @@ def g_place_shadow_light():
                                                    target=ref("parent.ReturnValue")) + ".ReturnValue")
     g.set("fromFlare", "LiftFrom", value=g.call("flareAt", ACTOR + ":K2_GetActorLocation",
                                                   target=ref("entry.Flare")) + ".ReturnValue")
-    g.call("lifted", KML + ":Add_VectorVector", A=ref(g.get("getFrom", "LiftFrom")), B="0.0,0.0,%s" % SHADOW_LIGHT_LIFT)
+    g.call("speed", KML + ":VSize", A=ref(g.call("velocity", ACTOR + ":GetVelocity", target=ref("entry.Flare")) + ".ReturnValue"))
+    g.call("moving", KML + ":Greater_FloatFloat", A=ref("speed.ReturnValue"), B=str(MOVING_SPEED))
+    g.call("liftZ", KML + ":SelectFloat", A="0.0", B=str(SHADOW_LIGHT_LIFT), bPickA=ref("moving.ReturnValue"))
+    g.call("lift", KML + ":MakeVector", X="0.0", Y="0.0", Z=ref("liftZ.ReturnValue"))
+    g.call("lifted", KML + ":Add_VectorVector", A=ref(g.get("getFrom", "LiftFrom")), B=ref("lift.ReturnValue"))
     g.call("lightAt", SCENE + ":K2_GetComponentLocation", target=ref(light))
     g.call("offset", KML + ":Subtract_VectorVector", A=ref("lifted.ReturnValue"), B=ref("lightAt.ReturnValue"))
     g.call("far", KML + ":Greater_FloatFloat", A=ref(g.call("dist", KML + ":VSize", A=ref("offset.ReturnValue")) + ".ReturnValue"),
@@ -874,9 +1025,10 @@ def g_apply_flare():
 
     The game's flare has three spot lights in a ring (shadows, a few metres) and one fill point light
     (no shadows, 20 m; flare gun 35 m). Their intensity is animated by the flare every frame from its own
-    variables: BaseIntensity (hand flare: fill and spots), LightIntensity_Point and LightIntensity_Spot
-    (flare gun). The mod sets those variables, so the game's fade-in and flicker stay. The last seconds of
-    the light are faded by the mod itself (see FADE_SLOTS).
+    variable BaseIntensity (hand flare: fill and spots). The mod sets that variable, so the game's fade-in and
+    flicker stay. A flare gun flare keeps its lights' own intensities; its variables LightIntensity_Point and
+    LightIntensity_Spot are only used when it goes out (see GUN_END_POINT). The last seconds of the light are
+    faded by the mod itself (see FADE_SLOTS).
 
     Mod on (bUpgrade): the fill becomes the one shadow light, all round, like a real flame: reach Range,
     steeper falloff, lifted 15 cm above the flare, the flare's own mesh casts no shadow. The three spot lights
@@ -930,11 +1082,7 @@ def g_apply_flare():
     # Hand flare: fill = Base*k, spots = Base*k*1.6 (in the game). Total in the game = 2.6 * Base.
     g.call("handBig", KML + ":Multiply_FloatFloat", A=ref("brightLum.ReturnValue"),
            B=ref(g.call("handBigS", KML + ":Multiply_FloatFloat", A=str(HAND_TOTAL), B=ref(strength)) + ".ReturnValue"))
-    g.call("gunPointBig", KML + ":Multiply_FloatFloat", A=ref("brightLum.ReturnValue"),
-           B=ref(g.call("gunPointS", KML + ":Multiply_FloatFloat", A=str(GUN_TOTAL / GUN_POINT_BASE), B=ref(strength)) + ".ReturnValue"))
     g.call("weak", KML + ":Subtract_FloatFloat", A="1.0", B=ref(strength))
-    g.call("gunSpotBig", KML + ":Multiply_FloatFloat", A=ref("brightLum.ReturnValue"),
-           B=ref(g.call("gunSpotS", KML + ":Multiply_FloatFloat", A=str(GUN_TOTAL / GUN_SPOT_BASE), B=ref("weak.ReturnValue")) + ".ReturnValue"))
     # Hand flare spots share the fill's BaseIntensity, so they are dimmed through their colour instead.
     g.call("handAmbient", KML + ":Divide_FloatFloat", A=ref(g.call("handWeak", KML + ":Multiply_FloatFloat", A=str(1.0 / HAND_SPOT_SHARE),
                                                                      B=ref("weak.ReturnValue")) + ".ReturnValue"),
@@ -947,8 +1095,6 @@ def g_apply_flare():
         return node_id + ".ReturnValue"
 
     hand_boost = pick("handBoost", "handBig.ReturnValue")
-    point_boost = pick("pointBoost", "gunPointBig.ReturnValue")
-    spot_boost = pick("spotBoost", "gunSpotBig.ReturnValue")
     g.call("ambientGain", KML + ":SelectFloat", A=ref("handAmbientClamp.ReturnValue"), B="1.0", bPickA=ref("entry.bUpgrade"))
     g.call("gainPick", KML + ":SelectFloat", A="1.0", B=ref("ambientGain.ReturnValue"), bPickA=ref(is_gun))
     g.call("biasPick", KML + ":SelectFloat", A=str(GUN_BIAS_GAME), B=str(FLARE_BIAS_GAME), bPickA=ref(is_gun))
@@ -961,8 +1107,9 @@ def g_apply_flare():
     g.call("base1", KML + ":SelectFloat", A=str(HAND_BASE["Small_Driller"]), B=ref("base2.ReturnValue"), bPickA=ref("isSmallDrill.ReturnValue"))
     g.call("base", KML + ":SelectFloat", A=str(HAND_BASE["Small_Engineer"]), B=ref("base1.ReturnValue"), bPickA=ref("isSmallEng.ReturnValue"))
     g.call("handI", KML + ":Multiply_FloatFloat", A=ref("base.ReturnValue"), B=ref(hand_boost))
-    g.call("pointI", KML + ":Multiply_FloatFloat", A=str(GUN_POINT_BASE), B=ref(point_boost))
-    g.call("spotI", KML + ":Multiply_FloatFloat", A=str(GUN_SPOT_BASE), B=ref(spot_boost))
+    # Flare gun: with the mod on, what the game writes when the flare goes out is the lights' own level.
+    g.call("pointI", KML + ":SelectFloat", A=str(GUN_POINT_BASE / GUN_END_POINT), B=str(GUN_POINT_BASE), bPickA=ref("entry.bUpgrade"))
+    g.call("spotI", KML + ":SelectFloat", A=str(GUN_SPOT_BASE / GUN_END_SPOT), B=str(GUN_SPOT_VAR_GAME), bPickA=ref("entry.bUpgrade"))
     g.call("setHandI", KSL + ":SetFloatPropertyByName", Object=ref(flare), PropertyName="BaseIntensity", Value=ref("handI.ReturnValue"))
     g.call("setPointI", KSL + ":SetFloatPropertyByName", Object=ref(flare), PropertyName="LightIntensity_Point", Value=ref("pointI.ReturnValue"))
     g.call("setSpotI", KSL + ":SetFloatPropertyByName", Object=ref(flare), PropertyName="LightIntensity_Spot", Value=ref("spotI.ReturnValue"))
@@ -1128,6 +1275,10 @@ def g_mod_events():
     # The Tick only fades flare lights: after the game's own updates, and off until a light fades.
     g.call("tickGroup", ACTOR + ":SetTickGroup", NewTickGroup=TICK_GROUP)
     g.call("tickOff", ACTOR + ":SetActorTickEnabled", bEnabled="false")
+    # A flare gun flare's particle system went off (BindGunEnd): its lights were just hidden.
+    g.node("gunOut", "customevent", name="GunFlareOut", signature="/Script/Engine.ActorComponent:OnComponentDeactivated")
+    g.call("gunTail", "GunTail", Component=ref("gunOut.Component"))
+    g.flow("gunOut", "gunTail")
     g.node("tick", "event", name="ReceiveTick", **{"class": ACTOR})
     g.call("fade", "FadeLights")
     g.flow("tick", "fade")
@@ -1157,11 +1308,16 @@ def mod_asset():
             t("IsGun", "bool", default="false"),
             t("Stale", "bool", default="false"),
             t("LiftFrom", "struct", "/Script/CoreUObject.Vector"),
-            # Nearest flares (ApplyFlares).
+            # Nearest flares (ApplyFlares): burning flares, their distances, the copy the cut is found in.
             t("CamAt", "struct", "/Script/CoreUObject.Vector"),
-            t("FlareDist", "float", default="0.0"),
-            t("Rank", "int", default="0"),
             t("CastAll", "bool", default="true"),
+            t("Lit", "object", ACTOR, array=True),
+            t("Dists", "float", array=True),
+            t("Nearest", "float", array=True),
+            t("Cut", "float", default="0.0"),
+            t("MinDist", "float", default="0.0"),
+            t("MinAt", "int", default="0"),
+            t("LitNow", "bool", default="true"),
             t("Meshes", "object", MESH, array=True),
             t("Actors", "object", ACTOR, array=True),
             # Fade-out of flare lights (see FADE_SLOTS).
@@ -1173,6 +1329,7 @@ def mod_asset():
             t("FadeActors", "object", ACTOR, array=True),
             t("FadePoints", "object", POINT, array=True),
             t("Timelines", "object", TIMELINE, array=True),
+            t("Parts", "object", PARTICLES, array=True),
         ] + [var for i in range(FADE_SLOTS) for var in (
             t(slot("FadeFlare", i), "object", ACTOR),
             t(slot("FadeStart", i), "float", default="0.0"),
@@ -1196,8 +1353,11 @@ def mod_asset():
             {"name": "StartFades", "inputs": [t("FlareClass", "class", ACTOR), t("bGun", "bool")]},
             {"name": "FlareDue", "inputs": [t("Flare", "object", ACTOR), t("bGun", "bool")]},
             {"name": "IsFading", "inputs": [t("Flare", "object", ACTOR)], "outputs": [t("bFading", "bool")]},
+            {"name": "IsLit", "inputs": [t("Flare", "object", ACTOR)], "outputs": [t("bLit", "bool")]},
             {"name": "AddFade", "inputs": [t("Flare", "object", ACTOR), t("Start", "float"), t("End", "float")]},
             {"name": "FadeLights"}, {"name": "StopFades"},
+            {"name": "BindGunEnd", "inputs": [t("Flare", "object", ACTOR)]},
+            {"name": "GunTail", "inputs": [t("Component", "object", "/Script/Engine.ActorComponent")]},
         ],
         "graphs": {
             "LoadSettings": g_load_settings(), "SaveSettings": g_save_settings(),
@@ -1206,8 +1366,9 @@ def mod_asset():
             "ApplyPawn": g_apply_pawn(), "Watch": g_watch(), "WatchFlares": g_watch_flares(),
             "PlaceShadowLight": g_place_shadow_light(), "ApplyLevel": g_apply_level(),
             "ColourLight": g_colour_light(), "AimSpot": g_aim_spot(), "EventGraph": g_mod_events(),
-            "StartFades": g_start_fades(), "FlareDue": g_flare_due(), "IsFading": g_is_fading(), "AddFade": g_add_fade(),
+            "StartFades": g_start_fades(), "FlareDue": g_flare_due(), "IsFading": g_is_fading(), "IsLit": g_is_lit(), "AddFade": g_add_fade(),
             "FadeLights": g_fade_lights(), "StopFades": g_stop_fades(),
+            "BindGunEnd": g_bind_gun_end(), "GunTail": g_gun_tail(),
         },
     }
 
@@ -1220,90 +1381,225 @@ def hub_asset():
 
 
 # --------------------------------------------------------------------------- settings page
+# The game's look (drgkit.bp.ui, skill drg-design): title, Enabled and Shadow quality, then DETAILED SETTINGS, a bar
+# that opens and closes the list of detailed settings (closed when the page is made; two groups, QUALITY and LOOK),
+# RESET TO DEFAULTS and an answer line. Widget names: Chk<Name>, Sld<Name> + Val<Name>, BtnReset, BtnDetails,
+# DetailRows, Note.
 
-WHITE = "(SpecifiedColor=(R=1.0,G=1.0,B=1.0,A=1.0))"
-GREY = "(SpecifiedColor=(R=0.55,G=0.55,B=0.55,A=1.0))"
-AMBER = "(SpecifiedColor=(R=1.0,G=0.62,B=0.1,A=1.0))"
-LABEL_WIDTH = 260
+SUBTITLE = "Real shadows with soft edges from headlamps and flares in missions. Every change shows right away."
+NOTE = "Settings are saved when Mod Hub closes."
+GROUPS = [
+    ("Quality", "QUALITY", "Shadow quality sets these. Changing one switches it to Custom.", False),
+    ("Look", "LOOK", "Shadow quality does not change these.", True),
+]
+VISIBILITY = "/Script/UMG.ESlateVisibility"
 
 
-def text(name, content, size, colour=WHITE, var=False, slot=None):
-    return {"class": UMG + "TextBlock", "name": name, "var": var,
-            "props": {"Text": content, "Font": "(Size=%d)" % size, "ColorAndOpacity": colour},
-            "slot": slot or {}}
+def label_box(name, label):
+    return ui.box("Box" + name, ui.LABEL_WIDTH, slot=ui.hslot(),
+                  child=ui.text("Lbl" + name, label.upper(), ui.CARBON, ui.F_LABEL, ui.LIGHT_TEXT))
 
 
-def sized(name, width, child):
-    return {"class": UMG + "SizeBox", "name": name,
-            "props": {"WidthOverride": str(width), "bOverride_WidthOverride": "True"},
-            "slot": {"VerticalAlignment": "VAlign_Center"}, "children": [child]}
+def check_row(name, label, checked, top):
+    return ui.hbox("Row" + name, [label_box(name, label), ui.check_box("Chk" + name, checked, slot=ui.hslot())],
+                   slot=ui.vslot(pad=(0, top, 0, 0)))
+
+
+def slider_row(name, label, low, high, step, value, shown, top):
+    return ui.hbox("Row" + name, [
+        label_box(name, label),
+        ui.slider("Sld" + name, low, high, step, value, slot=ui.hslot(fill=True, pad=(0, 0, 16, 0))),
+        ui.box("BoxVal" + name, ui.VALUE_WIDTH, slot=ui.hslot(),
+               child=ui.text("Val" + name, shown, ui.CARBON, ui.F_LABEL, ui.ORANGE, var=True, justify="Right",
+                             upper=True)),
+    ], slot=ui.vslot(pad=(0, top, 0, 0)))
+
+
+def hint(name, content):
+    return ui.text("Hint" + name, content, ui.BODY, ui.F_HINT, ui.LABEL, wrap=True,
+                   slot=ui.vslot(pad=(ui.LABEL_WIDTH, 2, 0, 0)))
+
+
+def shown(d, value):
+    """Text next to a detailed slider at build time."""
+    if d.all_at is not None and value >= d.all_at:
+        return "All"
+    return ("%." + str(d.digits) + "f") % value
+
+
+def group_head(name, title, content, top):
+    """A group in the detailed list: its name in orange capitals and one sentence."""
+    return [ui.text("Group" + name, title, ui.CARBON, ui.F_LABEL, ui.ORANGE, slot=ui.vslot(pad=(0, top, 0, 0))),
+            ui.text("GroupHint" + name, content, ui.BODY, ui.F_HINT, ui.LABEL, wrap=True,
+                    slot=ui.vslot(pad=(0, 2, 0, 0)))]
+
+
+def details_bar():
+    """DETAILED SETTINGS: a full-width bar with an orange rule; a click opens or closes the list (SHOW / HIDE)."""
+    pad = ui.margin(16, 0, 16, 0)
+    style = "(Normal=%s,Hovered=%s,Pressed=%s,Disabled=%s,NormalPadding=%s,PressedPadding=%s)" % (
+        ui.btn_brush(ui.HEAD_BG), ui.btn_brush(ui.DARK), ui.btn_brush(ui.DARK_HOVER), ui.btn_brush(ui.HEAD_BG),
+        pad, pad)
+    head = ui.hbox("DetailsHead", [
+        # Rift Soft's capitals sit a little low in its line (see ui.game_button): lift them by 0.08 em.
+        ui.text("LblDetails", "DETAILED SETTINGS", ui.RIFT, ui.F_BUTTON, ui.LIGHT_TEXT,
+                slot=ui.hslot(fill=True, pad=(0, 0, 0, round(ui.F_BUTTON * 0.08)))),
+        ui.text("SignDetails", "SHOW", ui.CARBON, ui.F_LABEL, ui.ORANGE, var=True, slot=ui.hslot()),
+    ])
+    head["slot"] = {"HorizontalAlignment": "HAlign_Fill", "VerticalAlignment": "VAlign_Center", "Padding": ui.margin()}
+    button = ui.w("Button", "BtnDetails", True, {"WidgetStyle": style, "IsFocusable": "False"}, children=[head])
+    return ui.vbox("Details", [ui.rule("DetailsRule"), ui.box("DetailsSize", height=ui.BTN_HEIGHT, slot=ui.vslot(),
+                                                               child=button)],
+                   slot=ui.vslot(pad=(0, 28, 0, 0)))
 
 
 def page_tree():
-    pad = {"Padding": "(Left=0,Top=4,Right=0,Bottom=4)"}
-    hint_pad = {"Padding": "(Left=0,Top=0,Right=0,Bottom=10)"}
     rows = [
-        text("Title", "UMBRA SHADOWS", 26, AMBER, slot=pad),
-        text("Subtitle", "Real shadows with soft edges from headlamps and flares. Changes apply at once in a mission.",
-             13, GREY, slot={"Padding": "(Left=0,Top=0,Right=0,Bottom=14)"}),
+        ui.text("Title", MOD_NAME.upper(), ui.RIFT, ui.F_PAGE_TITLE, ui.ORANGE, slot=ui.vslot()),
+        ui.text("Subtitle", SUBTITLE, ui.BODY, ui.F_SUBTITLE, ui.LIGHT_TEXT, wrap=True, slot=ui.vslot(pad=(0, 2, 0, 6))),
     ]
-    for name, label, hint, _ in CHECKS:
-        rows.append({"class": UMG + "HorizontalBox", "name": "Row" + name, "slot": pad, "children": [
-            sized("Box" + name, LABEL_WIDTH, text("Lbl" + name, label, 16)),
-            {"class": UMG + "CheckBox", "name": "Chk" + name, "var": True, "slot": {"VerticalAlignment": "VAlign_Center"}},
-        ]})
-        rows.append(text("Hint" + name, hint, 12, GREY, slot=hint_pad))
-    for name, label, hint, low, high, step, default in SLIDERS:
-        rows.append({"class": UMG + "HorizontalBox", "name": "Row" + name, "slot": pad, "children": [
-            sized("Box" + name, LABEL_WIDTH, text("Lbl" + name, label, 16)),
-            {"class": UMG + "Slider", "name": "Sld" + name, "var": True,
-             "props": {"MinValue": str(low), "MaxValue": str(high), "StepSize": str(step), "MouseUsesStep": "True",
-                       "Value": str(default)},
-             "slot": {"Size": "(Value=1.0,SizeRule=Fill)", "VerticalAlignment": "VAlign_Center",
-                      "Padding": "(Left=12,Top=0,Right=12,Bottom=0)"}},
-            sized("BoxVal" + name, 70, text("Val" + name, str(default), 16, AMBER, var=True)),
-        ]})
-        rows.append(text("Hint" + name, hint, 12, GREY, slot=hint_pad))
-    rows.append({"class": UMG + "Button", "name": "BtnReset", "var": True,
-                 "slot": {"HorizontalAlignment": "HAlign_Left", "Padding": "(Left=0,Top=10,Right=0,Bottom=0)"},
-                 "children": [text("LblReset", "Reset to defaults", 14, "(SpecifiedColor=(R=0.02,G=0.02,B=0.02,A=1.0))")]})
-    return {"class": UMG + "ScrollBox", "name": "Root",
-            "children": [{"class": UMG + "VerticalBox", "name": "Rows", "children": rows}]}
+    for name, label, text, default in CHECKS:
+        rows += [check_row(name, label, default, 18), hint(name, text)]
+    for name, label, text, low, high, step, default in SLIDERS:
+        value = PRESET_NAMES[int(default)] if name == "Level" else "%.2f" % default
+        rows += [slider_row(name, label, low, high, step, default, value, 18), hint(name, text)]
+    rows.append(details_bar())
+    details = []
+    for i, (group, title, content, look) in enumerate(GROUPS):
+        details += group_head(group, title, content, 14 if i == 0 else 30)
+        for d in DETAILS:
+            if d.look != look:
+                continue
+            if d.check:
+                details.append(check_row(d.name, d.label, d.default, 14))
+            else:
+                details.append(slider_row(d.name, d.label, d.low, d.high, d.step,
+                                          min(d.default, d.all_at or d.default), shown(d, d.default), 14))
+            details.append(hint(d.name, d.hint))
+    rows.append(ui.w("VerticalBox", "DetailRows", True, {"Visibility": "Collapsed"}, ui.vslot(pad=(0, 4, 0, 0)),
+                     details))
+    rows.append(ui.hbox("ResetRow", [
+        ui.game_button("BtnReset", "RESET TO DEFAULTS", ui.F_BUTTON, primary=False, height=ui.BTN_HEIGHT,
+                       slot=ui.hslot()),
+        ui.text("Note", NOTE, ui.BODY, ui.F_SUBTITLE, ui.LABEL, var=True, slot=ui.hslot(fill=True, pad=(16, 0, 0, 0))),
+    ], slot=ui.vslot(pad=(0, 28, 0, 0))))
+    return ui.w("ScrollBox", "Root", children=[
+        ui.w("VerticalBox", "Rows", slot={"Padding": ui.margin(*ui.PAGE_PAD)}, children=rows)])
 
 
-def value_text(g, name, value_pin):
-    """Output pin: the text shown next to a slider. The level shows its name, other sliders their number."""
-    if name != "Level":
-        g.call("txt" + name, KTXT + ":Conv_FloatToText", MaximumFractionalDigits="2", Value=ref(value_pin))
-        return "txt%s.ReturnValue" % name
-    _, picks = level_index(g, "txt", value_pin)
+def preset_text(g, prefix, value_pin):
+    """Output pin: the name of the level (Low ... Ultra, Custom) for a Level value."""
+    _, picks = level_index(g, prefix, value_pin, PRESET_NAMES)
     value = None
-    for i in reversed(range(len(LEVEL_NAMES) - 1)):
-        node = "txtPick%d" % i
-        g.call(node, KML + ":SelectString", A=LEVEL_NAMES[i], bPickA=ref(picks[i]),
-               B=ref(value) if value else LEVEL_NAMES[-1])
+    for i in reversed(range(len(PRESET_NAMES) - 1)):
+        node = "%sPick%d" % (prefix, i)
+        g.call(node, KML + ":SelectString", A=PRESET_NAMES[i], bPickA=ref(picks[i]),
+               B=ref(value) if value else PRESET_NAMES[-1])
         value = node + ".ReturnValue"
-    g.call("txtLevel", KTXT + ":Conv_StringToText", InString=ref(value))
-    return "txtLevel.ReturnValue"
+    g.call(prefix + "Txt", KTXT + ":Conv_StringToText", InString=ref(value))
+    return prefix + "Txt.ReturnValue"
+
+
+def number_text(g, prefix, value_pin, digits, all_at=None):
+    """Output pin: a slider's value as text; "All" from all_at up."""
+    g.call(prefix + "Num", KTXT + ":Conv_FloatToText", Value=ref(value_pin),
+           MinimumFractionalDigits=str(digits), MaximumFractionalDigits=str(digits))
+    if all_at is None:
+        return prefix + "Num.ReturnValue"
+    g.call(prefix + "IsAll", KML + ":GreaterEqual_FloatFloat", A=ref(value_pin), B=str(all_at))
+    g.call(prefix + "Str", KTXT + ":Conv_TextToString", InText=ref(prefix + "Num.ReturnValue"))
+    g.call(prefix + "Pick", KML + ":SelectString", A="All", B=ref(prefix + "Str.ReturnValue"),
+           bPickA=ref(prefix + "IsAll.ReturnValue"))
+    g.call(prefix + "Txt", KTXT + ":Conv_StringToText", InString=ref(prefix + "Pick.ReturnValue"))
+    return prefix + "Txt.ReturnValue"
+
+
+def value_text(g, prefix, name, value_pin):
+    """Output pin: the text next to slider `name` for a value pin."""
+    if name == "Level":
+        return preset_text(g, prefix, value_pin)
+    detail = next((d for d in DETAILS if d.name == name), None)
+    if detail is None:
+        return number_text(g, prefix, value_pin, 2)
+    return number_text(g, prefix, value_pin, detail.digits, detail.all_at)
+
+
+def widget_call(g, node_id, widget, fn, **pins):
+    return g.call(node_id, UMG + fn, target=ref(g.get(node_id + "W", widget)), **pins)
 
 
 def g_page_sync():
+    """Sync: every control shows the mod's settings (SetValue and SetIsChecked fire no events)."""
     g = Graph()
     settings = g.get("getSet", "Settings", MOD_C, g.get("getMod", "Mod"))
     g.call("valid", KSL + ":IsValid", Object=ref(settings))
     g.branch("br", "valid.ReturnValue")
     chain = ["entry", "br"]
-    for name, *_ in SLIDERS:
+    checks = [name for name, *_ in CHECKS] + [d.name for d in DETAILS if d.check]
+    sliders = [(name, None) for name, *_ in SLIDERS] + [(d.name, d.all_at) for d in DETAILS if not d.check]
+    for name, all_at in sliders:
         value = g.get("get" + name, name, SETTINGS_C, settings)
-        g.call("setV" + name, UMG + "Slider:SetValue", target=ref(g.get("sld" + name, "Sld" + name)), InValue=ref(value))
-        g.call("setT" + name, UMG + "TextBlock:SetText", target=ref(g.get("val" + name, "Val" + name)),
-               InText=ref(value_text(g, name, value)))
+        shown_value = value
+        if all_at is not None:  # ALL_FLARES puts the handle on the top stop
+            shown_value = g.call("top" + name, KML + ":FMin", A=ref(value), B=str(all_at)) + ".ReturnValue"
+        widget_call(g, "setV" + name, "Sld" + name, "Slider:SetValue", InValue=ref(shown_value))
+        widget_call(g, "setT" + name, "Val" + name, "TextBlock:SetText", InText=ref(value_text(g, "sync" + name, name, value)))
         chain += ["setV" + name, "setT" + name]
-    for name, *_ in CHECKS:
-        g.call("setC" + name, UMG + "CheckBox:SetIsChecked", target=ref(g.get("chk" + name, "Chk" + name)),
-               InIsChecked=ref(g.get("get" + name, name, SETTINGS_C, settings)))
+    for name in checks:
+        widget_call(g, "setC" + name, "Chk" + name, "CheckBox:SetIsChecked",
+                    InIsChecked=ref(g.get("get" + name, name, SETTINGS_C, settings)))
         chain.append("setC" + name)
     g.flow(*chain)
+    return g.data()
+
+
+def g_set_custom():
+    """SetCustom: the player changed a detailed setting; the level becomes Custom (only the slider and its text
+    change, the detailed settings stay)."""
+    g = Graph()
+    settings = g.get("getSet", "Settings", MOD_C, g.get("getMod", "Mod"))
+    g.set("setLevel", "Level", SETTINGS_C, settings, default=str(float(CUSTOM)))
+    widget_call(g, "setV", "SldLevel", "Slider:SetValue", InValue=str(float(CUSTOM)))
+    g.call("txt", KTXT + ":Conv_StringToText", InString=PRESET_NAMES[CUSTOM])
+    widget_call(g, "setT", "ValLevel", "TextBlock:SetText", InText=ref("txt.ReturnValue"))
+    g.flow("entry", "setLevel", "setV", "setT")
+    return g.data()
+
+
+def g_reset_defaults():
+    """ResetDefaults: Enabled, the default level (and so its detailed settings) and the look settings."""
+    g = Graph()
+    mod = g.get("getMod", "Mod")
+    settings = g.get("getSet", "Settings", MOD_C, mod)
+    chain = ["entry"]
+    for name, _, _, default in CHECKS:
+        chain.append(g.set("rst" + name, name, SETTINGS_C, settings, default=str(default).lower()))
+    for name, _, _, _, _, _, default in SLIDERS:
+        chain.append(g.set("rst" + name, name, SETTINGS_C, settings, default=str(default)))
+    for name, default in LOOK_SETTINGS:
+        chain.append(g.set("rst" + name, name, SETTINGS_C, settings, default=str(default)))
+    g.call("level", MOD_C + ":ApplyLevel", target=ref(mod))
+    g.call("sync", "Sync")
+    g.call("apply", MOD_C + ":ApplySettings", target=ref(mod))
+    g.flow(*chain, "level", "sync", "apply", *modhub.note(g, "note", "Defaults restored.", ui.GOOD))
+    return g.data()
+
+
+def g_toggle_details():
+    """ToggleDetails: opens or closes the list of detailed settings."""
+    g = Graph()
+    g.call("flip", KML + ":Not_PreBool", A=ref(g.get("getOpen", "DetailsOpen")))
+    g.set("setOpen", "DetailsOpen", value="flip.ReturnValue")
+    open_now = g.get("getOpen2", "DetailsOpen")
+    g.node("vis", "select", index="bool", type={"type": "enum", "class": VISIBILITY})
+    g.link(open_now, "vis.Index")
+    g.defaults["vis.Option 0"] = "Collapsed"
+    g.defaults["vis.Option 1"] = "Visible"
+    widget_call(g, "show", "DetailRows", "Widget:SetVisibility", InVisibility=ref("vis.ReturnValue"))
+    g.call("sign", KML + ":SelectString", A="HIDE", B="SHOW", bPickA=ref(open_now))
+    g.call("signTxt", KTXT + ":Conv_StringToText", InString=ref("sign.ReturnValue"))
+    widget_call(g, "setSign", "SignDetails", "TextBlock:SetText", InText=ref("signTxt.ReturnValue"))
+    g.flow("entry", "setOpen", "show", "setSign")
     return g.data()
 
 
@@ -1315,36 +1611,56 @@ def g_page_events():
     def apply(node_id):
         return g.call(node_id, MOD_C + ":ApplySettings", target=ref(mod))
 
+    # Main settings. A level writes its detailed settings, and the list shows them.
     for name, *_ in SLIDERS:
-        g.node("ev" + name, "boundevent", widget="Sld" + name, name="OnValueChanged")
-        g.set("set" + name, name, SETTINGS_C, settings, "ev%s.Value" % name)
-        g.call("setT" + name, UMG + "TextBlock:SetText", target=ref(g.get("val" + name, "Val" + name)),
-               InText=ref(value_text(g, name, "ev%s.Value" % name)))
-        steps = ["ev" + name, "set" + name, "setT" + name]
+        ev = "ev" + name
+        g.node(ev, "boundevent", widget="Sld" + name, name="OnValueChanged")
+        g.set("set" + name, name, SETTINGS_C, settings, ev + ".Value")
+        widget_call(g, "setT" + name, "Val" + name, "TextBlock:SetText", InText=ref(value_text(g, ev, name, ev + ".Value")))
+        steps = [ev, "set" + name, "setT" + name]
         if name == "Level":
-            steps.append(g.call("level" + name, MOD_C + ":ApplyLevel", target=ref(mod)))
+            steps += [g.call("level" + name, MOD_C + ":ApplyLevel", target=ref(mod)), g.call("sync" + name, "Sync")]
         g.flow(*steps, apply("apply" + name))
-
     for name, *_ in CHECKS:
-        g.node("ev" + name, "boundevent", widget="Chk" + name, name="OnCheckStateChanged")
-        g.set("set" + name, name, SETTINGS_C, settings, "ev%s.bIsChecked" % name)
-        g.flow("ev" + name, "set" + name, apply("apply" + name))
+        ev = "ev" + name
+        g.node(ev, "boundevent", widget="Chk" + name, name="OnCheckStateChanged")
+        g.set("set" + name, name, SETTINGS_C, settings, ev + ".bIsChecked")
+        g.flow(ev, "set" + name, apply("apply" + name))
+
+    # Detailed settings: the value, then Custom (not for the look settings).
+    for d in DETAILS:
+        ev = "ev" + d.name
+        if d.check:
+            g.node(ev, "boundevent", widget="Chk" + d.name, name="OnCheckStateChanged")
+            g.set("set" + d.name, d.name, SETTINGS_C, settings, ev + ".bIsChecked")
+            steps = [ev, "set" + d.name]
+        else:
+            g.node(ev, "boundevent", widget="Sld" + d.name, name="OnValueChanged")
+            value = ev + ".Value"
+            if d.all_at is not None:
+                g.call(ev + "IsAll", KML + ":GreaterEqual_FloatFloat", A=ref(value), B=str(d.all_at))
+                value = g.call(ev + "Stored", KML + ":SelectFloat", A=str(ALL_FLARES), B=ref(value),
+                               bPickA=ref(ev + "IsAll.ReturnValue")) + ".ReturnValue"
+            g.set("set" + d.name, d.name, SETTINGS_C, settings, value)
+            widget_call(g, "setT" + d.name, "Val" + d.name, "TextBlock:SetText",
+                        InText=ref(number_text(g, ev + "T", ev + ".Value", d.digits, d.all_at)))
+            steps = [ev, "set" + d.name, "setT" + d.name]
+        if not d.look:
+            steps.append(g.call("custom" + d.name, "SetCustom"))
+        g.flow(*steps, apply("apply" + d.name))
 
     g.node("evReset", "boundevent", widget="BtnReset", name="OnClicked")
-    chain = ["evReset"]
-    for name, _, _, default in CHECKS:
-        g.set("rst" + name, name, SETTINGS_C, settings, default=str(default).lower())
-        chain.append("rst" + name)
-    for name, _, _, _, _, _, default in SLIDERS:
-        g.set("rst" + name, name, SETTINGS_C, settings, default=str(default))
-        chain.append("rst" + name)
-    g.call("levelReset", MOD_C + ":ApplyLevel", target=ref(mod))
-    g.call("syncReset", "Sync")
-    g.flow(*chain, "levelReset", "syncReset", apply("applyReset"))
+    g.call("reset", "ResetDefaults")
+    g.flow("evReset", "reset")
+    ui.press_feedback(g, "BtnReset")
+
+    g.node("evDetails", "boundevent", widget="BtnDetails", name="OnClicked")
+    g.call("toggle", "ToggleDetails")
+    g.flow("evDetails", "toggle")
 
     g.node("opened", "event", name="HubPageOpened", **{"class": iface("IHubPageWidget")})
     g.call("syncOpen", "Sync")
-    g.flow("opened", "syncOpen")
+    g.flow("opened", "syncOpen", *modhub.note(g, "noteOpen", NOTE, ui.LABEL))
 
     g.node("closed", "event", name="HubPageClosed", **{"class": iface("IHubPageWidget")})
     g.call("save", MOD_C + ":SaveSettings", target=ref(mod))
@@ -1353,13 +1669,18 @@ def g_page_events():
 
 
 def page_asset():
+    graphs = {"Sync": g_page_sync(), "SetCustom": g_set_custom(), "ResetDefaults": g_reset_defaults(),
+              "ToggleDetails": g_toggle_details(), "EventGraph": g_page_events(),
+              "GetPageInfo": modhub.g_page_info(MOD_NAME), "GetContainerMode": modhub.g_container_mode()}
+    for graph in graphs.values():
+        problems = dsl.lint(graph)
+        assert not problems, problems
     return {
         "kind": "widget", "path": PAGE, "parent": UMG + "UserWidget", "interfaces": [iface("IHubPageWidget")],
-        "variables": [t("Mod", "object", MOD_C)],
-        "functions": [{"name": "Sync"}],
+        "variables": [t("Mod", "object", MOD_C), t("DetailsOpen", "bool", default="false")],
+        "functions": [{"name": "Sync"}, {"name": "SetCustom"}, {"name": "ResetDefaults"}, {"name": "ToggleDetails"}],
         "tree": page_tree(),
-        "graphs": {"Sync": g_page_sync(), "EventGraph": g_page_events(),
-                   "GetPageInfo": modhub.g_page_info(MOD_NAME), "GetContainerMode": modhub.g_container_mode()},
+        "graphs": graphs,
     }
 
 
